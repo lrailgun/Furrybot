@@ -25,19 +25,44 @@ def esc(value):
 
 
 def card(data, avatar, member, accepted=False):
-    embed=discord.Embed(title=esc(data['name'])[:256], description=f"**{esc(data['species'])} · {esc(data['class'])} · уровень 1**\n{esc(data['alignment'])}", colour=0x9B7AD1)
-    embed.set_author(name=member.display_name[:256])
-    filename=avatar_filename(avatar)
-    embed.set_image(url='attachment://'+filename)
+    stats=[]
     for k in STATS:
         v=data['stats'][k]
-        embed.add_field(name=LABELS[k],value=f'**{v}** ({(v-10)//2:+d})',inline=True)
-    for title,key in [('Происхождение','background'),('Характер','personality'),('Предыстория','backstory'),('Особенность: '+esc(data['trait_name']),'trait')]:
-        embed.add_field(name=title[:256],value=esc(data[key])[:1024],inline=False)
-    embed.set_footer(text=('Принятая фурсона' if accepted else 'Черновик · можно перегенерировать')+' · Point Buy 27')
-    return {'embed':embed,'file':discord.File(io.BytesIO(avatar),filename=filename)}
+        stats.append(f'{LABELS[k]} {v:>2} ({(v-10)//2:+d})')
+    lines=[
+        f'## {esc(data["name"])}',
+        f'**{esc(data["species"])} · {esc(data["class"])} · уровень 1**',
+        f'{esc(data["alignment"])} · {esc(member.display_name)[:80]}',
+        '',
+        '~~~',
+        '  '.join(stats[:3]),
+        '  '.join(stats[3:]),
+        '~~~',
+        f'**Происхождение:** {esc(data["background"])}',
+        f'**Характер:** {esc(data["personality"])}',
+        '',
+        '**Предыстория**',
+        esc(data["backstory"]),
+        '',
+        f'**{esc(data["trait_name"])}:** {esc(data["trait"])}',
+        '',
+        '-# '+('Принятая фурсона' if accepted else 'Черновик · можно перегенерировать')+' · Point Buy 27',
+    ]
+    return '\n'.join(lines), discord.File(io.BytesIO(avatar),filename=avatar_filename(avatar))
 
- 
+
+async def send_card(send, data, avatar, member, accepted=False, note=None, **kwargs):
+    # Separate attachment and plain message: no narrow embed column.
+    body, file = card(data, avatar, member, accepted=accepted)
+    if note:
+        body = note + '\n\n' + body
+    if len(body) > 2000:
+        body = body[:1999] + '…'
+    visibility = {'ephemeral': kwargs['ephemeral']} if 'ephemeral' in kwargs else {}
+    await send(file=file, **visibility)
+    await send(content=body, **kwargs)
+
+
 async def acknowledge_and_run(inter, handler, *args, **kwargs):
     # Acknowledge before database access, role requests or cloud generation.
     try:
@@ -161,7 +186,7 @@ class FurBot(discord.Client):
 
     async def show_draft(self,inter,draft):
         revision,data,avatar=draft
-        await inter.followup.send('Это черновик. Принятие необратимо для обычного участника.',**card(data,avatar,inter.user),view=DraftView(self,inter.guild_id,inter.user.id,revision),ephemeral=True)
+        await send_card(inter.followup.send,data,avatar,inter.user,note='Это черновик. Принятие необратимо для обычного участника.',view=DraftView(self,inter.guild_id,inter.user.id,revision),ephemeral=True)
 
     async def open_panel(self,inter,generate):
         if not self.is_panel_channel(inter):
@@ -171,7 +196,7 @@ class FurBot(discord.Client):
         final=self.store.get(*key)
         if final:
             note=await self.grant_role(inter.user)
-            await inter.followup.send(note or 'Твоя принятая фурсона.',**card(*final,inter.user,accepted=True),ephemeral=True)
+            await send_card(inter.followup.send,*final,inter.user,accepted=True,note=note or 'Твоя принятая фурсона.',ephemeral=True)
         elif (draft:=self.store.draft(*key)):
             await self.show_draft(inter,draft)
         elif generate:
@@ -221,7 +246,7 @@ class FurBot(discord.Client):
         self.busy.add(key)
         try:
             note=await self.grant_role(inter.user)
-            await inter.followup.send(note or 'Фурсона принята! Роль выдана.',**card(*self.store.get(*key),inter.user,accepted=True),ephemeral=True)
+            await send_card(inter.followup.send,*self.store.get(*key),inter.user,accepted=True,note=note or 'Фурсона принята! Роль выдана.',ephemeral=True)
         finally:
             self.busy.discard(key)
 
@@ -346,7 +371,7 @@ class FurBot(discord.Client):
                 return
             note=await self.grant_role(member)
             await status.edit(content='Фурсона заменена администратором. '+note)
-            await message.channel.send(**card(data,avatar,member,accepted=True))
+            await send_card(message.channel.send,data,avatar,member,accepted=True)
             LOG.info('admin replacement: guild=%s actor=%s target=%s',key[0],actor.id,key[1])
         except GenerationError as exc:
             await message.reply(f'Ошибка генерации: {exc}. Прежний персонаж сохранён.')
@@ -377,7 +402,7 @@ class FurBot(discord.Client):
                     await message.reply(file=discord.File(io.BytesIO(final[1]),filename=avatar_filename(final[1])))
                 else:
                     note=await self.grant_role(member) if member.id==message.author.id else ''
-                    await message.reply(note or None,**card(*final,member,accepted=True))
+                    await send_card(message.reply,*final,member,accepted=True,note=note or None)
             elif cmd=='regenerate':
                 if not arg:
                     await message.reply('Использование: `!furry regenerate @участник`')

@@ -41,17 +41,17 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(asyncio.run(gen.portrait(EXAMPLE)),avatar)
         self.assertEqual(gen.post.await_args.args[0], 'image')
         prompt = gen.post.await_args.args[1]['prompt']
-        self.assertIn('FURRY CHARACTER ART', prompt)
-        self.assertIn('upright bipedal furry', prompt)
-        self.assertIn('humanoid torso', prompt)
-        self.assertIn('deadpan character comedy', prompt)
+        self.assertIn('furry OC profile icon', prompt)
+        self.assertIn('upright anthropomorphic animal PERSON', prompt)
+        self.assertIn('waist-up close portrait', prompt)
+        self.assertIn('One absurd accessory only', prompt)
         self.assertIn('no wildlife photography', prompt)
         self.assertIn(EXAMPLE['appearance'], prompt)
         self.assertLessEqual(len(prompt), 2048)
 
     def test_surreal_story_prompt(self):
-        self.assertIn('минимум три разных сюрреалистических поворота', SYSTEM)
-        self.assertIn('каждое предложение', SYSTEM)
+        self.assertIn('Минимум три разных сюрреалистических поворота', SYSTEM)
+        self.assertIn('Каждое предложение', SYSTEM)
         self.assertIn('Anthropomorphic', SYSTEM)
     def test_invalid_portrait(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
@@ -64,3 +64,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(avatar_filename(b'\xff\xd8\xff'+b'x'*20),'fursona.jpg')
         self.assertEqual(avatar_filename(b'\x89PNG\r\n\x1a\n'+b'x'*20),'fursona.png')
         self.assertEqual(avatar_filename(b'RIFF1234WEBP'),'fursona.webp')
+
+    def test_repetitions_trigger_repair(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        bad=copy.deepcopy(EXAMPLE); bad['backstory']='Лестница, лестницы и лестницей. Потом шкаф.'
+        gen.post=AsyncMock(side_effect=[response(bad),response(EXAMPLE)])
+        self.assertEqual(asyncio.run(gen.character([])),EXAMPLE)
+        self.assertEqual(gen.post.await_count,2)
+
+    def test_recent_overlap(self):
+        from style import repetition_issue
+        data=dict(EXAMPLE,backstory='Сырники холодные куплены возле вокзала. Сырники понравились.')
+        recent=[dict(data, name='А'),dict(data,name='Б')]
+        self.assertTrue(repetition_issue(data,recent))

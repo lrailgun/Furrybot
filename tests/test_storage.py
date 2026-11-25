@@ -48,3 +48,12 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.store.get(2,7)[1],b'second')
         self.assertEqual(self.store.installation(1)['channel'],10)
         self.assertEqual(self.store.installation(2)['channel'],20)
+
+    def test_generation_history_keeps_discarded_drafts(self):
+        for i in range(45):
+            self.store.save_draft(1,2,dict(EXAMPLE,name=str(i)),b'a')
+        self.assertEqual(len(self.store.recent(1)),20)
+        self.assertEqual(self.store.recent(1)[0]['name'],'44')
+        self.assertEqual(self.store.recent(1)[1]['name'],'43')
+        self.assertEqual(self.store.recent(2),[])
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM generation_history').fetchone()[0],40)

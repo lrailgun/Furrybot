@@ -21,6 +21,9 @@ class Store:
                 guild INTEGER NOT NULL, user INTEGER NOT NULL, revision TEXT NOT NULL,
                 data TEXT NOT NULL, avatar BLOB NOT NULL, updated INTEGER NOT NULL,
                 PRIMARY KEY(guild,user));
+            CREATE TABLE IF NOT EXISTS generation_history(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, guild INTEGER NOT NULL, data TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS generation_history_guild ON generation_history(guild,id);
             CREATE TABLE IF NOT EXISTS installations(
                 guild INTEGER PRIMARY KEY, channel INTEGER NOT NULL, panel INTEGER NOT NULL,
                 admin_role INTEGER NOT NULL, member_role INTEGER NOT NULL);
@@ -43,6 +46,7 @@ class Store:
                 return None
             self.db.execute('INSERT OR REPLACE INTO drafts VALUES(?,?,?,?,?,?)',
                 (guild,user,revision,json.dumps(data,ensure_ascii=False),avatar,int(time.time())))
+            self.record_history(guild,data)
         return revision
 
     def accept(self, guild, user, revision):
@@ -64,6 +68,7 @@ class Store:
             changed = self.db.execute('UPDATE characters SET data=?,avatar=?,updated=? WHERE guild=? AND user=?',
                 (json.dumps(data,ensure_ascii=False),avatar,int(time.time()),guild,user)).rowcount
             if changed:
+                self.record_history(guild,data)
                 self.db.execute('DELETE FROM drafts WHERE guild=? AND user=?',(guild,user))
             return bool(changed)
 
@@ -76,10 +81,25 @@ class Store:
             self.db.execute('INSERT OR REPLACE INTO installations VALUES(?,?,?,?,?)',
                 (guild,channel,panel,admin_role,member_role))
 
+    def record_history(self, guild, data):
+        self.db.execute('INSERT INTO generation_history(guild,data) VALUES(?,?)',
+                        (guild,json.dumps(data,ensure_ascii=False)))
+        self.db.execute('DELETE FROM generation_history WHERE guild=? AND id NOT IN (SELECT id FROM generation_history WHERE guild=? ORDER BY id DESC LIMIT 40)',(guild,guild))
+
     def recent(self, guild):
-        rows = self.db.execute('''SELECT data FROM (SELECT data,updated FROM characters WHERE guild=?
-            UNION ALL SELECT data,updated FROM drafts WHERE guild=?) ORDER BY updated DESC LIMIT 20''',(guild,guild))
-        return [{k:d[k] for k in ('name','species','class')} for row in rows if (d:=json.loads(row['data']))]
+        rows = self.db.execute('SELECT data FROM generation_history WHERE guild=? ORDER BY id DESC LIMIT 20',(guild,)).fetchall()
+        if len(rows) < 20:
+            rows += self.db.execute('SELECT data FROM (SELECT data,updated FROM characters WHERE guild=? UNION ALL SELECT data,updated FROM drafts WHERE guild=?) ORDER BY updated DESC LIMIT 20',(guild,guild)).fetchall()
+        keys = ('name','species','class','background','personality','backstory','trait_name','trait')
+        seen = set()
+        result = []
+        for row in rows:
+            if row['data'] in seen:
+                continue
+            seen.add(row['data'])
+            data = json.loads(row['data'])
+            result.append({k:data[k] for k in keys if k in data})
+        return result[:20]
 
     def roster(self, guild):
         return [(r['user'],json.loads(r['data'])) for r in self.db.execute(
