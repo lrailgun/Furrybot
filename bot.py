@@ -75,7 +75,6 @@ class FurBot(discord.Client):
         intents.message_content=True
         super().__init__(intents=intents,allowed_mentions=discord.AllowedMentions.none())
         self.cfg=cfg
-        self.guild_id=int(cfg['DISCORD_GUILD_ID'])
         self.max_parallel=int(cfg['MAX_PARALLEL'])
         self.store=Store(cfg['DATABASE_PATH'])
         self.busy=set()
@@ -87,14 +86,15 @@ class FurBot(discord.Client):
         self.session=aiohttp.ClientSession()
         self.cloud=CloudGenerator(self.session,self.cfg['CLOUDFLARE_ACCOUNT_ID'],self.cfg['CLOUDFLARE_API_TOKEN'],self.cfg['TEXT_MODEL'],self.cfg['IMAGE_MODEL'],int(self.cfg['IMAGE_STEPS']))
         self.add_view(Panel(self))
-        # Remove legacy v1 guild slash commands, not commands of other apps.
+        self.legacy_tree=app_commands.CommandTree(self)
+
+    async def clear_legacy_commands(self,guild):
+        # Only clear this application's legacy guild commands after authorized installation.
         try:
-            tree=app_commands.CommandTree(self)
-            guild=discord.Object(id=self.guild_id)
-            if await tree.fetch_commands(guild=guild):
-                await tree.sync(guild=guild)
+            if await self.legacy_tree.fetch_commands(guild=guild):
+                await self.legacy_tree.sync(guild=guild)
         except discord.HTTPException:
-            LOG.warning('Не удалось удалить устаревшие slash-команды')
+            LOG.warning('Не удалось удалить устаревшие slash-команды для guild=%s',guild.id)
 
     async def on_ready(self):
         LOG.info('Подключён как %s',self.user)
@@ -108,7 +108,7 @@ class FurBot(discord.Client):
             self.store.close()
 
     def is_panel_channel(self,inter):
-        if inter.guild_id!=self.guild_id:
+        if inter.guild_id is None:
             return False
         setup=self.store.installation(inter.guild_id)
         return bool(setup and setup['channel']==inter.channel_id)
@@ -249,6 +249,7 @@ class FurBot(discord.Client):
                 else:
                     panel=await channel.send(embed=embed,view=Panel(self))
                 self.store.set_installation(guild.id,channel.id,panel.id,admin.id,member.id)
+                await self.clear_legacy_commands(guild)
                 await message.reply(f'Панель готова: {channel.mention}. Для смены принятых фурсон выдай нужным администраторам роль «{esc(admin.name)}».')
             except (discord.HTTPException,ValueError) as exc:
                 LOG.warning('Ошибка установки панели: %s',type(exc).__name__)
@@ -294,7 +295,7 @@ class FurBot(discord.Client):
             self.busy.discard(key)
 
     async def on_message(self,message):
-        if message.author.bot or not message.guild or message.guild.id!=self.guild_id:
+        if message.author.bot or not message.guild:
             return
         parts=message.content.strip().split(maxsplit=2)
         if not parts or parts[0].casefold()!=PREFIX:

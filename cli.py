@@ -18,7 +18,7 @@ APP=Path('/opt/furrybot')
 VENVS=APP/'.venvs'
 UNIT='furrybot.service'
 UNIT_PATH=Path('/etc/systemd/system/furrybot.service')
-VERSION='2.1.0'
+VERSION='2.1.1'
 
 def run(*args, check=True, capture=False, cwd=None):
     return subprocess.run([str(a) for a in args],check=check,cwd=cwd, text=True,stdout=subprocess.PIPE if capture else None)
@@ -58,12 +58,6 @@ def secret_menu():
         if re.fullmatch(r'[0-9a-fA-F]{32}',value):
             cfg['CLOUDFLARE_ACCOUNT_ID']=value; break
         print('Нужен 32-значный hex ID.')
-    while True:
-        value=input(f"Discord guild ID [{cfg['DISCORD_GUILD_ID'] or 'не задан'}; Enter — оставить]: ").strip()
-        if not value: break
-        if value.isdigit() and 0<int(value)<2**63:
-            cfg['DISCORD_GUILD_ID']=value; break
-        print('Нужен числовой ID сервера.')
     save_config(cfg)
     print('Настройки сохранены. Для применения запусти или перезапусти сервис.')
 
@@ -162,7 +156,7 @@ def logs():
 ACTIONS={'status':status,'start':lambda:start_or_restart('start'),'stop':lambda:(root(),run('systemctl','stop',UNIT)),
          'restart':lambda:start_or_restart('restart'),'logs':logs,'secret':secret_menu,'config':settings_menu,
          'check-update':check_update,'update':update,'version':lambda:print('Furrybot '+VERSION)}
-MENU=[('status','Статус'),('start','Запустить'),('stop','Остановить'),('restart','Перезапустить'),('logs','Журнал'),('secret','Задать секреты и ID сервера'),('config','Настройки'),('check-update','Проверить обновления'),('update','Обновить'),('version','Версия')]
+MENU=[('status','Статус'),('start','Запустить'),('stop','Остановить'),('restart','Перезапустить'),('logs','Журнал'),('secret','Задать секреты'),('config','Настройки'),('check-update','Проверить обновления'),('update','Обновить'),('version','Версия')]
 
 def execute(action):
     try:

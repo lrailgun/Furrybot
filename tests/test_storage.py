@@ -35,3 +35,16 @@ class StorageTests(unittest.TestCase):
     def test_unlimited_rerolls(self):
         for _ in range(100): self.assertIsNotNone(self.store.save_draft(1,2,EXAMPLE,b'a'))
         self.assertEqual(self.store.roster(1),[])
+    def test_independent_installations_and_acceptance(self):
+        self.store.set_installation(1,10,11,12,13)
+        self.store.set_installation(2,20,21,22,23)
+        a=self.store.save_draft(1,7,EXAMPLE,b'first')
+        b=self.store.save_draft(2,7,EXAMPLE,b'second')
+        self.assertFalse(self.store.accept(2,7,a))
+        self.assertTrue(self.store.accept(1,7,a))
+        self.assertIsNone(self.store.get(2,7))
+        self.assertTrue(self.store.accept(2,7,b))
+        self.assertEqual(self.store.get(1,7)[1],b'first')
+        self.assertEqual(self.store.get(2,7)[1],b'second')
+        self.assertEqual(self.store.installation(1)['channel'],10)
+        self.assertEqual(self.store.installation(2)['channel'],20)
