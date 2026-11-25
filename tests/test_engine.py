@@ -40,7 +40,19 @@ class EngineTests(unittest.TestCase):
         gen.post=AsyncMock(return_value={'success':True,'result':{'image':base64.b64encode(avatar).decode()}})
         self.assertEqual(asyncio.run(gen.portrait(EXAMPLE)),avatar)
         self.assertEqual(gen.post.await_args.args[0], 'image')
-        self.assertIn('deadpan character comedy', gen.post.await_args.args[1]['prompt'])
+        prompt = gen.post.await_args.args[1]['prompt']
+        self.assertIn('FURRY CHARACTER ART', prompt)
+        self.assertIn('upright bipedal furry', prompt)
+        self.assertIn('humanoid torso', prompt)
+        self.assertIn('deadpan character comedy', prompt)
+        self.assertIn('no wildlife photography', prompt)
+        self.assertIn(EXAMPLE['appearance'], prompt)
+        self.assertLessEqual(len(prompt), 2048)
+
+    def test_surreal_story_prompt(self):
+        self.assertIn('минимум три разных сюрреалистических поворота', SYSTEM)
+        self.assertIn('каждое предложение', SYSTEM)
+        self.assertIn('Anthropomorphic', SYSTEM)
     def test_invalid_portrait(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
         gen.post=AsyncMock(return_value={'success':True,'result':{'image':'abcd'}})

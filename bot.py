@@ -28,7 +28,7 @@ def card(data, avatar, member, accepted=False):
     embed=discord.Embed(title=esc(data['name'])[:256], description=f"**{esc(data['species'])} · {esc(data['class'])} · уровень 1**\n{esc(data['alignment'])}", colour=0x9B7AD1)
     embed.set_author(name=member.display_name[:256])
     filename=avatar_filename(avatar)
-    embed.set_thumbnail(url='attachment://'+filename)
+    embed.set_image(url='attachment://'+filename)
     for k in STATS:
         v=data['stats'][k]
         embed.add_field(name=LABELS[k],value=f'**{v}** ({(v-10)//2:+d})',inline=True)
