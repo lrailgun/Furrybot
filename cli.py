@@ -6,6 +6,7 @@ import getpass
 import grp
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -17,7 +18,7 @@ APP=Path('/opt/furrybot')
 VENVS=APP/'.venvs'
 UNIT='furrybot.service'
 UNIT_PATH=Path('/etc/systemd/system/furrybot.service')
-VERSION='2.0.0'
+VERSION='2.1.0'
 
 def run(*args, check=True, capture=False, cwd=None):
     return subprocess.run([str(a) for a in args],check=check,cwd=cwd, text=True,stdout=subprocess.PIPE if capture else None)
@@ -47,10 +48,16 @@ def secret_menu():
     root()
     if not sys.stdin.isatty(): raise ValueError('Ввод секретов требует интерактивного терминала.')
     cfg=read_config()
-    for key,label in [('DISCORD_TOKEN','Discord bot token'),('OPENAI_API_KEY','OpenAI API key')]:
+    for key,label in [('DISCORD_TOKEN','Discord bot token'),('CLOUDFLARE_API_TOKEN','Cloudflare Workers AI API token')]:
         state='задан' if cfg[key] else 'не задан'
         value=getpass.getpass(f'{label} [{state}; Enter — оставить]: ').strip()
         if value: cfg[key]=value
+    while True:
+        value=input(f"Cloudflare Account ID [{cfg['CLOUDFLARE_ACCOUNT_ID'] or 'не задан'}; Enter — оставить]: ").strip()
+        if not value: break
+        if re.fullmatch(r'[0-9a-fA-F]{32}',value):
+            cfg['CLOUDFLARE_ACCOUNT_ID']=value; break
+        print('Нужен 32-значный hex ID.')
     while True:
         value=input(f"Discord guild ID [{cfg['DISCORD_GUILD_ID'] or 'не задан'}; Enter — оставить]: ").strip()
         if not value: break
@@ -63,13 +70,13 @@ def secret_menu():
 def settings_menu():
     root()
     cfg=read_config()
-    for key in ('TEXT_MODEL','IMAGE_MODEL','IMAGE_QUALITY','MAX_PARALLEL','ADMIN_ROLE','MEMBER_ROLE','CHANNEL_NAME'):
+    for key in ('TEXT_MODEL','IMAGE_MODEL','IMAGE_STEPS','MAX_PARALLEL','ADMIN_ROLE','MEMBER_ROLE','CHANNEL_NAME'):
         value=input(f'{key} [{cfg[key]}]: ').strip()
         if value:
             if key=='MAX_PARALLEL' and (not value.isdigit() or not 1<=int(value)<=10):
                 print('Допустимо 1–10; оставлено прежнее значение.'); continue
-            if key=='IMAGE_QUALITY' and value not in ('low','medium','high','auto'):
-                print('Допустимо low, medium, high, auto; оставлено прежнее значение.'); continue
+            if key=='IMAGE_STEPS' and (not value.isdigit() or not 1<=int(value)<=8):
+                print('Допустимо 1–8; оставлено прежнее значение.'); continue
             cfg[key]=value
     save_config(cfg)
     print('Настройки сохранены. Перезапусти сервис. Уже зарегистрированные ID ролей сохраняются.')

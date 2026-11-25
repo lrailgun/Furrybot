@@ -9,7 +9,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from config import runtime_config
-from engine import CloudGenerator, GenerationError, STATS
+from engine import CloudGenerator, GenerationError, STATS, avatar_filename
 from storage import Store
 
 LOG = logging.getLogger('furrybot')
@@ -24,14 +24,15 @@ def esc(value):
 def card(data, avatar, member, accepted=False):
     embed=discord.Embed(title=esc(data['name'])[:256], description=f"**{esc(data['species'])} · {esc(data['class'])} · уровень 1**\n{esc(data['alignment'])}", colour=0x9B7AD1)
     embed.set_author(name=member.display_name[:256])
-    embed.set_thumbnail(url='attachment://fursona.webp')
+    filename=avatar_filename(avatar)
+    embed.set_thumbnail(url='attachment://'+filename)
     for k in STATS:
         v=data['stats'][k]
         embed.add_field(name=LABELS[k],value=f'**{v}** ({(v-10)//2:+d})',inline=True)
     for title,key in [('Происхождение','background'),('Характер','personality'),('Предыстория','backstory'),('Особенность: '+esc(data['trait_name']),'trait')]:
         embed.add_field(name=title[:256],value=esc(data[key])[:1024],inline=False)
     embed.set_footer(text=('Принятая фурсона' if accepted else 'Черновик · можно перегенерировать')+' · Point Buy 27')
-    return {'embed':embed,'file':discord.File(io.BytesIO(avatar),filename='fursona.webp')}
+    return {'embed':embed,'file':discord.File(io.BytesIO(avatar),filename=filename)}
 
 
 class Panel(discord.ui.View):
@@ -84,7 +85,7 @@ class FurBot(discord.Client):
 
     async def setup_hook(self):
         self.session=aiohttp.ClientSession()
-        self.cloud=CloudGenerator(self.session,self.cfg['OPENAI_API_KEY'],self.cfg['TEXT_MODEL'],self.cfg['IMAGE_MODEL'],self.cfg['IMAGE_QUALITY'])
+        self.cloud=CloudGenerator(self.session,self.cfg['CLOUDFLARE_ACCOUNT_ID'],self.cfg['CLOUDFLARE_API_TOKEN'],self.cfg['TEXT_MODEL'],self.cfg['IMAGE_MODEL'],int(self.cfg['IMAGE_STEPS']))
         self.add_view(Panel(self))
         # Remove legacy v1 guild slash commands, not commands of other apps.
         try:
@@ -313,7 +314,7 @@ class FurBot(discord.Client):
                 if not final:
                     await message.reply('У этого участника нет принятой фурсоны.')
                 elif cmd=='avatar':
-                    await message.reply(file=discord.File(io.BytesIO(final[1]),filename='fursona.webp'))
+                    await message.reply(file=discord.File(io.BytesIO(final[1]),filename=avatar_filename(final[1])))
                 else:
                     note=await self.grant_role(member) if member.id==message.author.id else ''
                     await message.reply(note or None,**card(*final,member,accepted=True))
