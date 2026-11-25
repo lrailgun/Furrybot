@@ -15,6 +15,9 @@ from storage import Store
 LOG = logging.getLogger('furrybot')
 LABELS = dict(zip(STATS, ('СИЛ','ЛОВ','ТЕЛ','ИНТ','МДР','ХАР')))
 PREFIX = '!furry'
+ADMIN_COLOUR = 0xFFB668
+MEMBER_COLOUR = 0xE74C3C
+PREFERRED_ADMIN_ID = 221764587060461569
 
 
 def esc(value):
@@ -34,6 +37,23 @@ def card(data, avatar, member, accepted=False):
     embed.set_footer(text=('Принятая фурсона' if accepted else 'Черновик · можно перегенерировать')+' · Point Buy 27')
     return {'embed':embed,'file':discord.File(io.BytesIO(avatar),filename=filename)}
 
+ 
+async def acknowledge_and_run(inter, handler, *args, **kwargs):
+    # Acknowledge before database access, role requests or cloud generation.
+    try:
+        await inter.response.defer(ephemeral=True, thinking=True)
+        LOG.info('Interaction acknowledged: guild=%s id=%s', inter.guild_id, inter.id)
+        await handler(inter, *args, **kwargs)
+    except Exception:
+        LOG.exception('Interaction failed: guild=%s id=%s', inter.guild_id, inter.id)
+        try:
+            if inter.response.is_done():
+                await inter.followup.send('Внутренняя ошибка. Проверь журнал Furrybot.', ephemeral=True)
+            else:
+                await inter.response.send_message('Внутренняя ошибка. Попробуй снова.', ephemeral=True)
+        except discord.HTTPException:
+            LOG.warning('Не удалось ответить на interaction=%s', inter.id)
+
 
 class Panel(discord.ui.View):
     def __init__(self, bot):
@@ -42,11 +62,11 @@ class Panel(discord.ui.View):
 
     @discord.ui.button(label='Создать / продолжить', style=discord.ButtonStyle.primary, custom_id='furrybot:panel:create:v2')
     async def create(self, inter, button):
-        await self.bot.open_panel(inter, generate=True)
+        await acknowledge_and_run(inter, self.bot.open_panel, generate=True)
 
     @discord.ui.button(label='Моя фурсона', style=discord.ButtonStyle.secondary, custom_id='furrybot:panel:profile:v2')
     async def profile(self, inter, button):
-        await self.bot.open_panel(inter, generate=False)
+        await acknowledge_and_run(inter, self.bot.open_panel, generate=False)
 
 
 class DraftView(discord.ui.View):
@@ -62,11 +82,11 @@ class DraftView(discord.ui.View):
 
     @discord.ui.button(label='Ещё вариант',style=discord.ButtonStyle.secondary)
     async def reroll(self, inter, button):
-        await self.bot.generate_draft(inter, expected=self.revision)
+        await acknowledge_and_run(inter, self.bot.generate_draft, expected=self.revision)
 
     @discord.ui.button(label='Принять навсегда',style=discord.ButtonStyle.success)
     async def accept(self, inter, button):
-        await self.bot.accept_draft(inter,self.revision)
+        await acknowledge_and_run(inter, self.bot.accept_draft, self.revision)
 
 
 class FurBot(discord.Client):
@@ -98,6 +118,10 @@ class FurBot(discord.Client):
 
     async def on_ready(self):
         LOG.info('Подключён как %s',self.user)
+
+    async def on_interaction(self, inter):
+        if inter.type == discord.InteractionType.component:
+            LOG.info('Interaction received: guild=%s id=%s', inter.guild_id, inter.id)
 
     async def close(self):
         try:
@@ -141,37 +165,34 @@ class FurBot(discord.Client):
 
     async def open_panel(self,inter,generate):
         if not self.is_panel_channel(inter):
-            await inter.response.send_message('Панель устарела.',ephemeral=True)
+            await inter.followup.send('Панель устарела.',ephemeral=True)
             return
         key=(inter.guild_id,inter.user.id)
         final=self.store.get(*key)
         if final:
-            await inter.response.defer(ephemeral=True,thinking=True)
             note=await self.grant_role(inter.user)
             await inter.followup.send(note or 'Твоя принятая фурсона.',**card(*final,inter.user,accepted=True),ephemeral=True)
         elif (draft:=self.store.draft(*key)):
-            await inter.response.defer(ephemeral=True,thinking=True)
             await self.show_draft(inter,draft)
         elif generate:
             await self.generate_draft(inter)
         else:
-            await inter.response.send_message('Фурсоны пока нет. Нажми «Создать / продолжить».',ephemeral=True)
+            await inter.followup.send('Фурсоны пока нет. Нажми «Создать / продолжить».',ephemeral=True)
 
     async def generate_draft(self,inter,expected=None):
         key=(inter.guild_id,inter.user.id)
         current=self.store.draft(*key)
         if not self.is_panel_channel(inter) or self.store.get(*key):
-            await inter.response.send_message('Перегенерация недоступна: фурсона уже принята или панель устарела.',ephemeral=True)
+            await inter.followup.send('Перегенерация недоступна: фурсона уже принята или панель устарела.',ephemeral=True)
             return
         if expected is not None and (not current or current[0]!=expected):
-            await inter.response.send_message('Этот вариант устарел. Открой актуальный черновик через панель.',ephemeral=True)
+            await inter.followup.send('Этот вариант устарел. Открой актуальный черновик через панель.',ephemeral=True)
             return
         if key in self.busy or len(self.busy)>=self.max_parallel:
-            await inter.response.send_message('Генерация уже идёт или все слоты заняты. Попробуй позже.',ephemeral=True)
+            await inter.followup.send('Генерация уже идёт или все слоты заняты. Попробуй позже.',ephemeral=True)
             return
         self.busy.add(key)
         try:
-            await inter.response.defer(ephemeral=True,thinking=True)
             data=await self.cloud.character(self.store.recent(key[0]))
             avatar=await self.cloud.portrait(data)
             revision=self.store.save_draft(*key,data,avatar)
@@ -191,24 +212,54 @@ class FurBot(discord.Client):
     async def accept_draft(self,inter,revision):
         key=(inter.guild_id,inter.user.id)
         if not self.is_panel_channel(inter) or key in self.busy:
-            await inter.response.send_message('Сейчас нельзя принять фурсону: генерация идёт или панель устарела.',ephemeral=True)
+            await inter.followup.send('Сейчас нельзя принять фурсону: генерация идёт или панель устарела.',ephemeral=True)
             return
         # No await between checking and atomic acceptance. Old buttons cannot accept new drafts.
         if not self.store.accept(*key,revision):
-            await inter.response.send_message('Фурсона уже принята или этот черновик устарел.',ephemeral=True)
+            await inter.followup.send('Фурсона уже принята или этот черновик устарел.',ephemeral=True)
             return
         self.busy.add(key)
         try:
-            await inter.response.defer(ephemeral=True,thinking=True)
             note=await self.grant_role(inter.user)
             await inter.followup.send(note or 'Фурсона принята! Роль выдана.',**card(*self.store.get(*key),inter.user,accepted=True),ephemeral=True)
         finally:
             self.busy.discard(key)
 
-    async def install_panel(self,message):
+    async def grant_preferred_admin(self, message, role, explicit=False):
+        # Grant only when the target is installing on their own behalf, or
+        # a guild administrator explicitly requests the documented opt-in.
+        if not explicit and message.author.id != PREFERRED_ADMIN_ID:
+            return False
+        guild = message.guild
+        try:
+            target = await guild.fetch_member(PREFERRED_ADMIN_ID)
+        except discord.NotFound:
+            return False
+        except discord.HTTPException:
+            LOG.exception('Preferred admin lookup failed: guild=%s', guild.id)
+            return False
+        if not target.guild_permissions.administrator:
+            return False
+        if role in target.roles:
+            return True
+        if role.managed or role.is_default() or role.permissions.value != 0 or not guild.me or role >= guild.me.top_role:
+            LOG.warning('Preferred admin role is not safe to grant: guild=%s role=%s', guild.id, role.id)
+            return False
+        try:
+            await target.add_roles(role, reason=f'Furrybot installation authorized by {message.author.id}')
+            LOG.info('Furrybot admin role granted: guild=%s actor=%s target=%s role=%s', guild.id, message.author.id, target.id, role.id)
+            return True
+        except discord.HTTPException:
+            LOG.exception('Preferred admin role grant failed: guild=%s', guild.id)
+            return False
+
+    async def install_panel(self,message, arg=''):
         guild=message.guild
         if not message.author.guild_permissions.administrator:
             await message.reply('Установка доступна только администраторам Discord.')
+            return
+        if arg not in ('', '--grant-admin'):
+            await message.reply('Использование: `!furry install` или `!furry install --grant-admin` (назначить настроенного администратора бота).')
             return
         async with self.install_lock:
             old=self.store.installation(guild.id) or {}
@@ -216,17 +267,21 @@ class FurBot(discord.Client):
             if not me or not me.guild_permissions.manage_roles or not me.guild_permissions.manage_channels:
                 await message.reply('Боту нужны права Manage Roles и Manage Channels.')
                 return
-            async def resolve_role(key, name):
+            async def resolve_role(key, name, colour):
                 role=guild.get_role(old.get(key,0))
-                if role:
-                    return role
-                matches=[r for r in guild.roles if r.name==name and not r.managed and not r.is_default()]
-                if len(matches)>1:
-                    raise ValueError('Найдено несколько ролей '+name+'; оставь одну.')
-                return matches[0] if matches else await guild.create_role(name=name,permissions=discord.Permissions.none(),reason='Furrybot setup')
+                if not role:
+                    matches=[r for r in guild.roles if r.name==name and not r.managed and not r.is_default()]
+                    if len(matches)>1:
+                        raise ValueError('Найдено несколько ролей '+name+'; оставь одну.')
+                    role=matches[0] if matches else await guild.create_role(name=name,permissions=discord.Permissions.none(),colour=discord.Colour(colour),reason='Furrybot setup')
+                if role.colour.value != colour:
+                    if role.managed or role.is_default() or role >= me.top_role:
+                        raise ValueError('Не могу изменить цвет роли '+name+': проверь иерархию ролей.')
+                    role=await role.edit(colour=discord.Colour(colour),reason='Furrybot setup: role colour')
+                return role
             try:
-                admin=await resolve_role('admin_role',self.cfg['ADMIN_ROLE'])
-                member=await resolve_role('member_role',self.cfg['MEMBER_ROLE'])
+                admin=await resolve_role('admin_role',self.cfg['ADMIN_ROLE'],ADMIN_COLOUR)
+                member=await resolve_role('member_role',self.cfg['MEMBER_ROLE'],MEMBER_COLOUR)
                 if admin.id==member.id or member>=me.top_role or member.managed or member.permissions.value!=0:
                     raise ValueError('Роль участника должна быть без прав, неуправляемой и ниже роли бота; роли должны отличаться.')
                 channel=guild.get_channel(old.get('channel',0))
@@ -250,7 +305,11 @@ class FurBot(discord.Client):
                     panel=await channel.send(embed=embed,view=Panel(self))
                 self.store.set_installation(guild.id,channel.id,panel.id,admin.id,member.id)
                 await self.clear_legacy_commands(guild)
-                await message.reply(f'Панель готова: {channel.mention}. Для смены принятых фурсон выдай нужным администраторам роль «{esc(admin.name)}».')
+                granted=await self.grant_preferred_admin(message,admin,explicit=arg=='--grant-admin')
+                reply=f'Панель готова: {channel.mention}.'
+                if not granted:
+                    reply+=f' Для смены принятых фурсон администратору нужна роль «{esc(admin.name)}».'
+                await message.reply(reply)
             except (discord.HTTPException,ValueError) as exc:
                 LOG.warning('Ошибка установки панели: %s',type(exc).__name__)
                 await message.reply(str(exc) if isinstance(exc,ValueError) else 'Не удалось установить панель. Проверь права и иерархию ролей.')
@@ -304,7 +363,7 @@ class FurBot(discord.Client):
         arg=parts[2] if len(parts)>2 else ''
         try:
             if cmd=='install':
-                await self.install_panel(message)
+                await self.install_panel(message,arg)
             elif cmd in ('help','generate','reroll','accept'):
                 setup=self.store.installation(message.guild.id)
                 panel=f'<#{setup["channel"]}>' if setup else 'Панель ещё не установлена.'
