@@ -1,10 +1,10 @@
 .env
+.env.*
+!.env.example
 .venv/
+.venvs/
 data/
 __pycache__/
 *.pyc
 .pytest_cache/
-
-# Host update lock and local configuration
-.env.*
-!.env.example
+config.json

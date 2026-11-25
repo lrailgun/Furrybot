@@ -1,13 +1,14 @@
-"""SQLite persistence and transactional generation quotas. No local content generation."""
+"""Persistent drafts, final characters and Discord installation IDs."""
 from __future__ import annotations
-import sqlite3
 import json
+import sqlite3
 import time
+import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+
 
 class Store:
-    def __init__(self, path: str):
+    def __init__(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=10)
         self.db.row_factory = sqlite3.Row
@@ -16,49 +17,73 @@ class Store:
             CREATE TABLE IF NOT EXISTS characters(
                 guild INTEGER NOT NULL, user INTEGER NOT NULL, data TEXT NOT NULL,
                 avatar BLOB NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY(guild,user));
-            CREATE TABLE IF NOT EXISTS daily(day TEXT PRIMARY KEY, count INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS cooldowns(guild INTEGER NOT NULL,user INTEGER NOT NULL,
-                last INTEGER NOT NULL, PRIMARY KEY(guild,user));
+            CREATE TABLE IF NOT EXISTS drafts(
+                guild INTEGER NOT NULL, user INTEGER NOT NULL, revision TEXT NOT NULL,
+                data TEXT NOT NULL, avatar BLOB NOT NULL, updated INTEGER NOT NULL,
+                PRIMARY KEY(guild,user));
+            CREATE TABLE IF NOT EXISTS installations(
+                guild INTEGER PRIMARY KEY, channel INTEGER NOT NULL, panel INTEGER NOT NULL,
+                admin_role INTEGER NOT NULL, member_role INTEGER NOT NULL);
         ''')
+        # v1.2 characters are conservatively treated as already accepted.
 
     def get(self, guild, user):
-        row = self.db.execute('SELECT data, avatar FROM characters WHERE guild=? AND user=?',(guild,user)).fetchone()
+        row = self.db.execute('SELECT data,avatar FROM characters WHERE guild=? AND user=?', (guild,user)).fetchone()
         return (json.loads(row['data']), row['avatar']) if row else None
 
-    def save(self, guild, user, data, avatar):
-        with self.db:
-            self.db.execute('INSERT OR REPLACE INTO characters VALUES(?,?,?,?,?)',
-                            (guild,user,json.dumps(data,ensure_ascii=False),avatar,int(time.time())))
+    def draft(self, guild, user):
+        row = self.db.execute('SELECT revision,data,avatar FROM drafts WHERE guild=? AND user=?', (guild,user)).fetchone()
+        return (row['revision'], json.loads(row['data']), row['avatar']) if row else None
 
-    def delete(self, guild, user):
-        with self.db:
-            return bool(self.db.execute('DELETE FROM characters WHERE guild=? AND user=?',(guild,user)).rowcount)
-
-    def reserve(self, guild, user, daily_limit, cooldown, now=None):
-        now = int(time.time()) if now is None else now
-        day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+    def save_draft(self, guild, user, data, avatar):
+        revision = uuid.uuid4().hex
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
-            last = self.db.execute('SELECT last FROM cooldowns WHERE guild=? AND user=?',(guild,user)).fetchone()
-            if last and now - last['last'] < cooldown:
-                return f'Следующая генерация доступна через <t:{last["last"]+cooldown}:R>.'
-            count = self.db.execute('SELECT count FROM daily WHERE day=?',(day,)).fetchone()
-            if count and count['count'] >= daily_limit:
-                return 'Суточный лимит генераций исчерпан. Сброс в 00:00 UTC.'
-            self.db.execute('INSERT INTO daily VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,))
-            self.db.execute('INSERT OR REPLACE INTO cooldowns VALUES(?,?,?)',(guild,user,now))
-            # Retain only operationally necessary quota history.
-            self.db.execute('DELETE FROM daily WHERE day < ?', (day,))
-            self.db.execute('DELETE FROM cooldowns WHERE last < ?', (now-max(86400,cooldown),))
-        return None
+            if self.get(guild,user):
+                return None
+            self.db.execute('INSERT OR REPLACE INTO drafts VALUES(?,?,?,?,?,?)',
+                (guild,user,revision,json.dumps(data,ensure_ascii=False),avatar,int(time.time())))
+        return revision
+
+    def accept(self, guild, user, revision):
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            if self.get(guild,user):
+                return False
+            result = self.db.execute('''INSERT INTO characters(guild,user,data,avatar,updated)
+                SELECT guild,user,data,avatar,? FROM drafts WHERE guild=? AND user=? AND revision=?''',
+                (int(time.time()),guild,user,revision))
+            if result.rowcount != 1:
+                return False
+            self.db.execute('DELETE FROM drafts WHERE guild=? AND user=?',(guild,user))
+            return True
+
+    def admin_replace(self, guild, user, data, avatar):
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            changed = self.db.execute('UPDATE characters SET data=?,avatar=?,updated=? WHERE guild=? AND user=?',
+                (json.dumps(data,ensure_ascii=False),avatar,int(time.time()),guild,user)).rowcount
+            if changed:
+                self.db.execute('DELETE FROM drafts WHERE guild=? AND user=?',(guild,user))
+            return bool(changed)
+
+    def installation(self, guild):
+        row = self.db.execute('SELECT * FROM installations WHERE guild=?',(guild,)).fetchone()
+        return dict(row) if row else None
+
+    def set_installation(self, guild, channel, panel, admin_role, member_role):
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO installations VALUES(?,?,?,?,?)',
+                (guild,channel,panel,admin_role,member_role))
 
     def recent(self, guild):
-        rows = self.db.execute('SELECT data FROM characters WHERE guild=? ORDER BY updated DESC LIMIT 20',(guild,))
+        rows = self.db.execute('''SELECT data FROM (SELECT data,updated FROM characters WHERE guild=?
+            UNION ALL SELECT data,updated FROM drafts WHERE guild=?) ORDER BY updated DESC LIMIT 20''',(guild,guild))
         return [{k:d[k] for k in ('name','species','class')} for row in rows if (d:=json.loads(row['data']))]
 
     def roster(self, guild):
-        rows = self.db.execute('SELECT user,data FROM characters WHERE guild=? ORDER BY updated DESC',(guild,))
-        return [(row['user'],json.loads(row['data'])) for row in rows]
+        return [(r['user'],json.loads(r['data'])) for r in self.db.execute(
+            'SELECT user,data FROM characters WHERE guild=? ORDER BY updated DESC',(guild,))]
 
     def close(self):
         self.db.close()
