@@ -3,10 +3,15 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from pathlib import Path
 import aiohttp
 from style import STYLE, PITCH_STYLE, AVATAR_STYLE, direction, repetition_issue
 
 LOG = logging.getLogger('furrybot.engine')
+KLEIN_MODEL = '@cf/black-forest-labs/flux-2-klein-4b'
+STYLE_REFERENCES = tuple(Path(__file__).resolve().parent / 'assets' / f'furry-style-{i}.jpg' for i in (1, 2))
+MIN_STORY_LENGTH = 400
+PREFERRED_STORY_LENGTH = 750
 
 STATS = ('str', 'dex', 'con', 'int', 'wis', 'cha')
 CLASSES = ('Варвар', 'Бард', 'Жрец', 'Друид', 'Воин', 'Монах', 'Паладин', 'Следопыт', 'Плут', 'Чародей', 'Колдун', 'Волшебник')
@@ -20,6 +25,7 @@ class GenerationError(Exception):
 SCHEMA = {
     'type':'object', 'additionalProperties':False,
     'properties': {**{key:{'type':'string'} for key in LIMITS},
+        'backstory':{'type':'string','minLength':MIN_STORY_LENGTH,'maxLength':LIMITS['backstory']},
         'class':{'type':'string','enum':list(CLASSES)},
         'alignment':{'type':'string','enum':list(ALIGNMENTS)},
         'stats':{'type':'object','additionalProperties':False,
@@ -32,7 +38,7 @@ PITCH_SCHEMA = {
     'required':['pitches'],
 }
 
-SYSTEM = STYLE + """\nВерни только JSON по схеме. Русский язык, кроме appearance. species — конкретный вид по-русски. class и alignment из схемы. Статы — шесть целых 8–15, стоимость ровно 27: 8=0, 9=1, 10=2, 11=3, 12=4, 13=5, 14=7, 15=9 (надёжный способ: переставь числа 15,14,13,12,10,8 между шестью характеристиками в соответствии с классом; этот набор уже стоит 27). name/species/trait_name до 60 символов, background до 80, personality/trait до 260, backstory до 480, appearance до 350. background — короткая профессия или статус, personality — одна конкретная смешная черта (до двух коротких фраз), trait_name и trait — короткая комическая способность без числовых бонусов. Вид, класс и реквизит согласованы с биографией. Не используй Markdown, ссылки, упоминания или реальные персональные данные."""
+SYSTEM = STYLE + """\nВерни только JSON по схеме. Русский язык, кроме appearance. species — конкретный вид по-русски. class и alignment из схемы. Статы — шесть целых 8–15, стоимость ровно 27: 8=0, 9=1, 10=2, 11=3, 12=4, 13=5, 14=7, 15=9 (надёжный способ: переставь числа 15,14,13,12,10,8 между шестью характеристиками в соответствии с классом; этот набор уже стоит 27). name/species/trait_name до 60 символов, background до 80, personality/trait до 260, backstory 400–850 (цель 450–750), appearance до 350. background — короткая профессия или статус, personality — одна конкретная смешная черта (до двух коротких фраз), trait_name и trait — короткая комическая способность без числовых бонусов. Вид, класс и реквизит согласованы с биографией. Не используй Markdown, ссылки, упоминания или реальные персональные данные."""
 
 def validate(data: dict) -> dict:
     if not isinstance(data, dict) or set(data) != set(SCHEMA['required']):
@@ -86,9 +92,10 @@ class CloudGenerator:
         self.image_model = image_model
         self.image_steps = image_steps
 
-    async def post(self, model: str, payload: dict, timeout: int) -> dict:
+    async def post(self, model: str, payload: dict | aiohttp.FormData, timeout: int) -> dict:
         try:
-            async with self.session.post(self.base + model, headers=self.headers, json=payload,
+            body = {'data':payload} if isinstance(payload,aiohttp.FormData) else {'json':payload}
+            async with self.session.post(self.base + model, headers=self.headers, **body,
                     timeout=aiohttp.ClientTimeout(total=timeout), allow_redirects=False) as resp:
                 if resp.status == 429:
                     raise GenerationError('Cloudflare ограничил запросы: возможно, исчерпана бесплатная квота. Сброс в 00:00 UTC')
@@ -147,6 +154,8 @@ class CloudGenerator:
                 raise
             try:
                 data = validate(extract_text(result))
+                if len(data['backstory']) < MIN_STORY_LENGTH:
+                    raise GenerationError(f'Предыстория слишком короткая: {len(data["backstory"])} символов; нужно минимум {MIN_STORY_LENGTH}. Разверни конфликт и добавь конкретное последствие и панчлайн.')
             except GenerationError as exc:
                 last_error = exc
                 LOG.warning('Character attempt %s/3 rejected by schema: %s', attempt, exc)
@@ -156,8 +165,8 @@ class CloudGenerator:
                 continue
 
             issue = repetition_issue(data, recent)
-            if len(data['backstory']) > 480:
-                issue = 'Предыстория длиннее желательных 480 символов; сократи без потери шуток.' + (' '+issue if issue else '')
+            if len(data['backstory']) > PREFERRED_STORY_LENGTH:
+                issue = f'Предыстория длиннее желательных {PREFERRED_STORY_LENGTH} символов; сократи без потери шуток.' + (' '+issue if issue else '')
             if not issue:
                 return data
             LOG.info('Character attempt %s/3 style warning: %s', attempt, issue)
@@ -170,9 +179,36 @@ class CloudGenerator:
             return fallback
         raise GenerationError(f'Модель трижды вернула некорректную карточку. Последняя причина: {last_error}') from last_error
 
+    def reference_form(self, data: dict) -> aiohttp.FormData:
+        form = aiohttp.FormData()
+        prompt = (
+            'Create a NEW single furry profile portrait in the DRAWING STYLE of reference images 0 and 1. '
+            'Use those images ONLY as a reference for linework, shape design, flat shadows and paper texture. '
+            'Do not copy the species, facial features, outfit, expression, colors, pose or props of the references. '
+            'The new character must be unmistakably the requested species, not a generic fox or wolf. '
+            'Fill the square frame with one head-and-shoulders or chest-up portrait, no panel divisions. '
+            + AVATAR_STYLE + 'Requested species (Russian): ' + data['species'] + '. ' + data['appearance']
+        )
+        form.add_field('prompt',prompt)
+        form.add_field('width','1024')
+        form.add_field('height','1024')
+        for index,path in enumerate(STYLE_REFERENCES):
+            try:
+                reference = path.read_bytes()
+            except OSError as exc:
+                raise GenerationError('Не найден каноничный референс аватара; проверь assets и обновление Furrybot') from exc
+            if not reference.startswith(b'\xff\xd8\xff'):
+                raise GenerationError('Каноничный референс повреждён; проверь assets')
+            form.add_field(f'input_image_{index}',reference,filename=path.name,content_type='image/jpeg')
+        return form
+
     async def portrait(self, data: dict) -> bytes:
-        prompt = AVATAR_STYLE + data['appearance']
-        result = await self.post(self.image_model, {'prompt':prompt,'steps':self.image_steps}, 180)
+        if self.image_model == KLEIN_MODEL:
+            payload = self.reference_form(data)
+        else:
+            prompt = AVATAR_STYLE + data['appearance']
+            payload = {'prompt':prompt,'steps':self.image_steps}
+        result = await self.post(self.image_model, payload, 180)
         try:
             img = base64.b64decode(result['result']['image'], validate=True)
         except (KeyError, TypeError, ValueError) as exc:

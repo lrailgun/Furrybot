@@ -6,7 +6,7 @@ from pathlib import Path
 
 CONFIG = Path('/etc/furrybot/config.json')
 DEFAULTS = {'DISCORD_TOKEN':'', 'CLOUDFLARE_ACCOUNT_ID':'', 'CLOUDFLARE_API_TOKEN':'',
-            'TEXT_MODEL':'@cf/meta/llama-3.3-70b-instruct-fp8-fast','IMAGE_MODEL':'@cf/black-forest-labs/flux-1-schnell',
+            'TEXT_MODEL':'@cf/meta/llama-3.3-70b-instruct-fp8-fast','IMAGE_MODEL':'@cf/black-forest-labs/flux-2-klein-4b',
             'IMAGE_STEPS':'4','MAX_PARALLEL':'2',
             'DATABASE_PATH':'/var/lib/furrybot/fursonas.sqlite3',
             'ADMIN_ROLE':'Его пушистое величество','MEMBER_ROLE':'Пушистый ребёнок природы',
@@ -22,7 +22,7 @@ def read_config(path=CONFIG):
         values.update({k:str(v) for k,v in raw.items() if k in DEFAULTS})
         if values['TEXT_MODEL'] == 'gpt-4.1-mini':
             values['TEXT_MODEL'] = DEFAULTS['TEXT_MODEL']
-        if values['IMAGE_MODEL'] == 'gpt-image-1.5':
+        if values['IMAGE_MODEL'] in ('gpt-image-1.5','@cf/black-forest-labs/flux-1-schnell'):
             values['IMAGE_MODEL'] = DEFAULTS['IMAGE_MODEL']
     return values
 

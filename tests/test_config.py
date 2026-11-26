@@ -20,3 +20,11 @@ class ConfigTests(unittest.TestCase):
             result=config.read_config(path)
             self.assertNotIn('DISCORD_GUILD_ID',result)
             self.assertEqual(result['DISCORD_TOKEN'],'preserved')
+
+    def test_old_image_model_migrates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'config.json'
+            path.write_text(json.dumps({'IMAGE_MODEL':'@cf/black-forest-labs/flux-1-schnell','DISCORD_TOKEN':'preserved'}))
+            result=config.read_config(path)
+            self.assertEqual(result['IMAGE_MODEL'],'@cf/black-forest-labs/flux-2-klein-4b')
+            self.assertEqual(result['DISCORD_TOKEN'],'preserved')
