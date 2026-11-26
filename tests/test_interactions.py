@@ -122,26 +122,24 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_initial_generation_status(self):
         inter=fake_inter(PANEL_CREATE)
-        old=await generation_progress(inter,replacing=False)
-        self.assertEqual(old,'')
+        progress=await generation_progress(inter,replacing=False)
+        self.assertIsNone(progress)
         self.assertEqual(inter.edit_original_response.await_args.kwargs['content'],GENERATION_STATUS)
         self.assertNotIn('attachments',inter.edit_original_response.await_args.kwargs)
 
-    async def test_reroll_status_preserves_attachment(self):
+    async def test_reroll_status_separate_preserves_card(self):
         inter=fake_inter(draft_custom_id('r',1,2,REV))
-        old=await generation_progress(inter,replacing=True)
-        self.assertEqual(old,'Прежняя карточка')
-        kwargs=inter.edit_original_response.await_args.kwargs
-        self.assertIn(GENERATION_STATUS,kwargs['content'])
-        self.assertIn(old,kwargs['content'])
-        self.assertNotIn('attachments',kwargs)
-        self.assertNotIn('view',kwargs)
-        await generation_failure(inter,old,'Ошибка')
-        self.assertEqual(inter.edit_original_response.await_args.kwargs['content'],'Ошибка\n\nПрежняя карточка')
+        progress=SimpleNamespace(delete=AsyncMock())
+        inter.followup.send.return_value=progress
+        self.assertIs(await generation_progress(inter,replacing=True),progress)
+        inter.followup.send.assert_awaited_once_with(GENERATION_STATUS,ephemeral=True,wait=True)
+        inter.edit_original_response.assert_not_awaited()
+        await generation_failure(inter,True,'Ошибка')
+        inter.followup.send.assert_awaited_with('Ошибка',ephemeral=True)
 
     async def test_first_generation_failure_replaces_status(self):
         inter=fake_inter(PANEL_CREATE)
-        await generation_failure(inter,'','Ошибка')
+        await generation_failure(inter,False,'Ошибка')
         self.assertEqual(inter.edit_original_response.await_args.kwargs['content'],'Ошибка')
 
     async def test_generation_updates_status_before_cloud_and_releases_slot_on_error(self):
@@ -161,4 +159,20 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         await FurBot.generate_draft(bot,inter)
         self.assertEqual(events[:2],[GENERATION_STATUS,'cloud'])
         self.assertIn('test',events[2])
+        self.assertEqual(bot.busy,set())
+
+    async def test_reroll_status_deleted_on_failure(self):
+        from engine import GenerationError
+        from unittest.mock import Mock
+        inter=fake_inter(draft_custom_id('r',1,2,REV))
+        progress=SimpleNamespace(delete=AsyncMock())
+        inter.followup.send.return_value=progress
+        bot=SimpleNamespace(store=SimpleNamespace(draft=Mock(return_value=(REV,{},b'a')),
+                            get=Mock(return_value=None),recent=Mock(return_value=[])),
+                            is_panel_channel=lambda inter:True,busy=set(),max_parallel=2,
+                            cloud=SimpleNamespace(character=AsyncMock(side_effect=GenerationError('test'))))
+        await FurBot.generate_draft(bot,inter,expected=REV)
+        self.assertEqual(inter.followup.send.await_args_list[0].args[0],GENERATION_STATUS)
+        progress.delete.assert_awaited_once()
+        inter.edit_original_response.assert_not_awaited()
         self.assertEqual(bot.busy,set())

@@ -6,7 +6,7 @@ import logging
 import time
 from pathlib import Path
 import aiohttp
-from style import STYLE, PITCH_STYLE, AVATAR_STYLE, direction, repetition_issue, unique_names, normalized_name
+from style import STYLE, PITCH_STYLE, AVATAR_STYLE, direction, repetition_issue, unique_names, normalized_name, NAME_DEMOS
 
 LOG = logging.getLogger('furrybot.engine')
 KLEIN_MODEL = '@cf/black-forest-labs/flux-2-klein-4b'
@@ -28,7 +28,6 @@ class GenerationError(Exception):
 SCHEMA = {
     'type':'object', 'additionalProperties':False,
     'properties': {**{key:{'type':'string'} for key in LIMITS},
-        'backstory':{'type':'string','minLength':MIN_STORY_LENGTH,'maxLength':LIMITS['backstory']},
         'class':{'type':'string','enum':list(CLASSES)},
         'alignment':{'type':'string','enum':list(ALIGNMENTS)},
         'stats':{'type':'object','additionalProperties':False,
@@ -42,7 +41,7 @@ PITCH_SCHEMA = {
     'required':['pitches','names'],
 }
 
-SYSTEM = STYLE + """\nВерни только JSON по схеме. Русский язык, кроме appearance. species — конкретный вид по-русски. class и alignment из схемы. Статы — шесть целых 8–15, стоимость ровно 27: 8=0, 9=1, 10=2, 11=3, 12=4, 13=5, 14=7, 15=9 (надёжный способ: переставь числа 15,14,13,12,10,8 между шестью характеристиками в соответствии с классом; этот набор уже стоит 27). name/species/trait_name до 60 символов, background до 80, personality/trait до 260, backstory 400–850 (цель 450–750), appearance до 350. background — короткая профессия или статус, personality — одна конкретная смешная черта (до двух коротких фраз), trait_name и trait — короткая комическая способность без числовых бонусов. Вид, класс и реквизит согласованы с биографией. Не используй Markdown, ссылки, упоминания или реальные персональные данные."""
+SYSTEM = STYLE + """\nВерни только JSON по схеме. Русский язык, кроме appearance. species — конкретный вид по-русски. class и alignment из схемы. Статы — шесть целых 8–15, стоимость ровно 27: 8=0, 9=1, 10=2, 11=3, 12=4, 13=5, 14=7, 15=9 (надёжный способ: переставь числа 15,14,13,12,10,8 между шестью характеристиками в соответствии с классом; этот набор уже стоит 27). name/species/trait_name до 60 символов, background до 80, personality/trait до 260, backstory 400–850 (цель 450–650, оставь запас до максимума и закончи сюжет), appearance до 350. background — короткая профессия или статус, personality — одна конкретная смешная черта (до двух коротких фраз), trait_name и trait — короткая комическая способность без числовых бонусов. Вид, класс и реквизит согласованы с биографией. Не используй Markdown, ссылки, упоминания или реальные персональные данные."""
 
 def validate(data: dict) -> dict:
     if not isinstance(data, dict) or set(data) != set(SCHEMA['required']):
@@ -146,7 +145,8 @@ class CloudGenerator:
     async def character(self, recent: list[dict]) -> dict:
         creative_direction = direction(recent)
         pitches,names = await self.draft_pitches(creative_direction)
-        used_names={normalized_name(n) for n in creative_direction['avoid_names']}
+        used_names={normalized_name(n) for n in (*creative_direction['avoid_names'],*NAME_DEMOS)}
+        candidate_names={normalized_name(n) for n in names}
         identities = [{k:row[k] for k in ('name','species','class') if k in row}
                       for row in recent[:8]]
         correction = ''
@@ -170,8 +170,12 @@ class CloudGenerator:
                 data = validate(extract_text(result))
                 if normalized_name(data['name']) in used_names:
                     raise GenerationError('Имя уже встречалось в недавних генерациях. Выбери другое имя и согласуй с ним биографию.')
+                if candidate_names and normalized_name(data['name']) not in candidate_names:
+                    raise GenerationError('Выбери одно из предложенных комических имён name_candidates, не подменяй его обычным именем.')
                 if len(data['backstory']) < MIN_STORY_LENGTH:
                     raise GenerationError(f'Предыстория слишком короткая: {len(data["backstory"])} символов; нужно минимум {MIN_STORY_LENGTH}. Разверни конфликт и добавь конкретное последствие и панчлайн.')
+                if not data['backstory'].rstrip('»”\"\')]').endswith(('.', '!', '?')):
+                    raise GenerationError('Предыстория оборвана: закончи последнюю мысль полноценным предложением с панчлайном.')
             except GenerationError as exc:
                 last_error = exc
                 LOG.warning('Character attempt %s/3 rejected by schema: %s', attempt, exc)
@@ -199,8 +203,8 @@ class CloudGenerator:
         form = aiohttp.FormData()
         prompt = (
             'Create a new character portrait as a companion illustration to image 0 and image 1, '
-            'matching their level of finished illustration detail, expressive species anatomy, tapered ink linework, layered fur shapes, '
-            'dimensional graphic shadows, pale keyline and vintage print texture. Do not reduce the artwork to a simple logo or mascot. '
+            'matching their exaggerated cartoon proportions, expressive shape design, tapered ink linework, layered flat fur shapes, '
+            'graphic cel shadows, pale keyline and vintage print texture. Match the reference cartoon stylization, not realism or a simple logo. '
             'Use images 0 and 1 ONLY as a reference for drawing technique and framing. '
             'The subject is a different individual of the requested species, with its own face, outfit, expression and palette. '
             'Requested species (Russian): ' + data['species'] + '. '

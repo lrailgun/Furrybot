@@ -18,7 +18,7 @@ APP=Path('/opt/furrybot')
 VENVS=APP/'.venvs'
 UNIT='furrybot.service'
 UNIT_PATH=Path('/etc/systemd/system/furrybot.service')
-VERSION='2.3.5'
+VERSION='2.3.6'
 
 def run(*args, check=True, capture=False, cwd=None):
     return subprocess.run([str(a) for a in args],check=check,cwd=cwd, text=True,stdout=subprocess.PIPE if capture else None)

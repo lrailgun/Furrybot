@@ -81,26 +81,21 @@ async def edit_interaction_card(inter, data, avatar, member, accepted=False, not
 
 
 async def generation_progress(inter, replacing):
-    # For rerolls, keep the old attachment and buttons until a new draft is ready.
-    old_content = (inter.message.content or '') if replacing else ''
-    content = GENERATION_STATUS
-    if old_content and len(content)+2+len(old_content)<=2000:
-        content += '\n\n'+old_content
-    await inter.edit_original_response(content=content, allowed_mentions=discord.AllowedMentions.none())
-    return old_content
+    # A separate, visible private followup for rerolls, while the old card remains intact.
+    if replacing:
+        message=await inter.followup.send(GENERATION_STATUS,ephemeral=True,wait=True)
+        LOG.info('Generation progress sent: interaction=%s',inter.id)
+        return message
+    await inter.edit_original_response(content=GENERATION_STATUS,allowed_mentions=discord.AllowedMentions.none())
+    LOG.info('Generation progress displayed: interaction=%s',inter.id)
+    return None
 
 
-async def generation_failure(inter, old_content, message):
-    # Restore the previous card in place. Do not leave a permanent loading notice.
-    if old_content:
-        content=message+'\n\n'+old_content
-        if len(content)<=2000:
-            await inter.edit_original_response(content=content, allowed_mentions=discord.AllowedMentions.none())
-        else:
-            await inter.edit_original_response(content=old_content, allowed_mentions=discord.AllowedMentions.none())
-            await inter.followup.send(message,ephemeral=True)
+async def generation_failure(inter, replacing, message):
+    if replacing:
+        await inter.followup.send(message,ephemeral=True)
     else:
-        await inter.edit_original_response(content=message, allowed_mentions=discord.AllowedMentions.none())
+        await inter.edit_original_response(content=message,allowed_mentions=discord.AllowedMentions.none())
 
 
 async def acknowledge_and_run(inter, handler, *args, update_message=False, **kwargs):
@@ -311,10 +306,11 @@ class FurBot(discord.Client):
             return
         self.busy.add(key)
         started=time.monotonic()
-        old_content=(inter.message.content or '') if expected is not None else ''
+        replacing=expected is not None
+        progress=None
         saved=False
         try:
-            old_content=await generation_progress(inter, replacing=expected is not None)
+            progress=await generation_progress(inter,replacing=replacing)
             LOG.info('Generation started: guild=%s user=%s',*key)
             async with asyncio.timeout(GENERATION_TIMEOUT):
                 LOG.info('Generation stage: text guild=%s user=%s',*key)
@@ -323,7 +319,7 @@ class FurBot(discord.Client):
                 avatar=await self.cloud.portrait(data)
             revision=self.store.save_draft(*key,data,avatar)
             if not revision:
-                await generation_failure(inter,old_content,'Фурсона уже принята. Черновик не сохранён.')
+                await generation_failure(inter,replacing,'Фурсона уже принята. Черновик не сохранён.')
                 return
             saved=True
             LOG.info('Generation stage: delivery guild=%s user=%s elapsed_s=%.1f',*key,time.monotonic()-started)
@@ -331,20 +327,25 @@ class FurBot(discord.Client):
             LOG.info('Generation finished: guild=%s user=%s elapsed_s=%.1f',*key,time.monotonic()-started)
         except TimeoutError:
             LOG.warning('Generation deadline exceeded: guild=%s user=%s elapsed_s=%.1f',*key,time.monotonic()-started)
-            await generation_failure(inter,old_content,'Генерация остановлена: превышено время ожидания. Старый черновик, если был, сохранён.')
+            await generation_failure(inter,replacing,'Генерация остановлена: превышено время ожидания. Старый черновик, если был, сохранён.')
         except GenerationError as exc:
             LOG.warning('Generation failed: guild=%s user=%s reason=%s',*key,exc)
-            await generation_failure(inter,old_content,f'Генерация не завершена: {exc}. Старый черновик, если был, сохранён.')
+            await generation_failure(inter,replacing,f'Генерация не завершена: {exc}. Старый черновик, если был, сохранён.')
         except Exception:
             LOG.exception('Ошибка генерации')
             message=('Новый черновик сохранён, но не удалось показать карточку. Открой «Создать / продолжить».'
                      if saved else 'Внутренняя ошибка. Открой панель повторно.')
             try:
-                await generation_failure(inter,'' if saved else old_content,message)
+                await generation_failure(inter,replacing,message)
             except discord.HTTPException:
                 LOG.warning('Не удалось обновить сообщение генерации: id=%s',inter.id)
         finally:
             self.busy.discard(key)
+            if progress is not None:
+                try:
+                    await progress.delete()
+                except discord.HTTPException:
+                    LOG.warning('Could not delete generation status: interaction=%s',inter.id)
 
     async def accept_draft(self,inter,revision):
         key=(inter.guild_id,inter.user.id)

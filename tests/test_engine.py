@@ -48,12 +48,14 @@ class EngineTests(unittest.TestCase):
         self.assertIn('upright anthropomorphic animal PERSON', prompt)
         self.assertIn('tight chest-up portrait', prompt)
         self.assertIn('70 percent of the canvas width', prompt)
-        self.assertIn('Thin pale keyline', prompt)
+        self.assertIn('thin pale keyline', prompt)
         self.assertIn('layered fur tufts', prompt)
         self.assertIn('varied line weight', prompt)
         self.assertIn('several coordinated tones', prompt)
         self.assertIn('subtle matte paper grain', prompt)
-        self.assertIn('not a logo', prompt)
+        self.assertIn('Not a logo', prompt)
+        self.assertIn('exaggerated cartoon proportions', prompt)
+        self.assertIn('no realistic fur', prompt)
         self.assertNotIn('exactly one main shadow tone', prompt)
         self.assertNotIn('few large sharply pointed', prompt)
         self.assertIn('not a fixed red or orange palette', prompt)
@@ -121,7 +123,7 @@ class EngineTests(unittest.TestCase):
     def test_long_valid_story_is_not_fatal(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
         gen.draft_pitches=AsyncMock(return_value=([],[]))
-        candidate=dict(EXAMPLE,backstory='А'*751)
+        candidate=dict(EXAMPLE,backstory='А'*750+'.')
         gen.post=AsyncMock(side_effect=[response(candidate),response(candidate)])
         self.assertEqual(asyncio.run(gen.character([])),candidate)
 
@@ -201,8 +203,8 @@ class EngineTests(unittest.TestCase):
         self.assertIn('ONLY as a reference',fields['prompt'])
         self.assertIn('companion illustration to image 0 and image 1',fields['prompt'])
         self.assertIn('chest cut by the bottom edge',fields['prompt'])
-        self.assertIn('level of finished illustration detail',fields['prompt'])
-        self.assertIn('dimensional graphic shadows',fields['prompt'])
+        self.assertIn('reference cartoon stylization',fields['prompt'])
+        self.assertIn('graphic cel shadows',fields['prompt'])
         self.assertNotIn('waist-up',fields['prompt'])
         self.assertNotIn('head-and-shoulders or',fields['prompt'])
         for i,path in enumerate(STYLE_REFERENCES):
@@ -234,3 +236,24 @@ class EngineTests(unittest.TestCase):
         from style import unique_names
         self.assertEqual(unique_names(['СЕМЕН Петров','Мира','  МИРА  ','Фёдор Булочкин','https://bad'],['Семён Петров']),
                          ['Мира','Фёдор Булочкин'])
+
+    def test_incomplete_story_repaired(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=([],[]))
+        broken=dict(EXAMPLE,backstory=EXAMPLE['backstory']+' И теперь он гор')
+        gen.post=AsyncMock(side_effect=[response(broken),response(EXAMPLE)])
+        self.assertEqual(asyncio.run(gen.character([])),EXAMPLE)
+        payload=json.loads(gen.post.await_args.args[1]['messages'][1]['content'])
+        self.assertIn('оборвана',payload['correction'])
+
+    def test_name_candidate_required(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=([],['Мира']))
+        gen.post=AsyncMock(side_effect=[response(dict(EXAMPLE,name='Обычное имя')),response(EXAMPLE)])
+        self.assertEqual(asyncio.run(gen.character([])),EXAMPLE)
+        payload=json.loads(gen.post.await_args.args[1]['messages'][1]['content'])
+        self.assertIn('name_candidates',payload['correction'])
+
+    def test_demonstration_names_not_reused(self):
+        from style import unique_names, NAME_DEMOS
+        self.assertEqual(unique_names([*NAME_DEMOS,'Мира'],[]),['Мира'])
