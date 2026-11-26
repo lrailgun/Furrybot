@@ -77,3 +77,44 @@ class EngineTests(unittest.TestCase):
         data=dict(EXAMPLE,backstory='Сырники холодные куплены возле вокзала. Сырники понравились.')
         recent=[dict(data, name='А'),dict(data,name='Б')]
         self.assertTrue(repetition_issue(data,recent))
+
+    def test_style_cannot_block_valid_card(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        bad_style=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
+        gen.post=AsyncMock(side_effect=[response(bad_style),response(bad_style)])
+        self.assertEqual(asyncio.run(gen.character([])),bad_style)
+        self.assertEqual(gen.post.await_count,2)
+
+    def test_style_retry_invalid_falls_back(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        candidate=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
+        invalid=copy.deepcopy(EXAMPLE); invalid['stats']['dex']=16
+        gen.post=AsyncMock(side_effect=[response(candidate),response(invalid)])
+        self.assertEqual(asyncio.run(gen.character([])),candidate)
+
+    def test_style_retry_api_error_falls_back(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        candidate=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
+        gen.post=AsyncMock(side_effect=[response(candidate),GenerationError('HTTP 429')])
+        self.assertEqual(asyncio.run(gen.character([])),candidate)
+
+    def test_long_valid_story_is_not_fatal(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        candidate=dict(EXAMPLE,backstory='А'*481)
+        gen.post=AsyncMock(side_effect=[response(candidate),response(candidate)])
+        self.assertEqual(asyncio.run(gen.character([])),candidate)
+
+    def test_schema_failure_reports_reason(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        invalid=copy.deepcopy(EXAMPLE); invalid['stats']['dex']=14
+        gen.post=AsyncMock(return_value=response(invalid))
+        with self.assertRaisesRegex(GenerationError,'Point Buy: 25 вместо 27'):
+            asyncio.run(gen.character([]))
+        self.assertEqual(gen.post.await_count,3)
+
+    def test_last_attempt_valid_despite_style(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        invalid=copy.deepcopy(EXAMPLE); invalid['stats']['dex']=16
+        candidate=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
+        gen.post=AsyncMock(side_effect=[response(invalid),response(invalid),response(candidate)])
+        self.assertEqual(asyncio.run(gen.character([])),candidate)
