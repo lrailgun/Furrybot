@@ -5,6 +5,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock
 from engine import CloudGenerator, GenerationError, SYSTEM, extract_text, validate, avatar_filename
+from style import AVATAR_STYLE, PITCH_STYLE
 
 EXAMPLE = dict(name='Мира', species='Снежный барс', background='Картограф', personality='Любопытна', backstory='Мира рисует карты горных троп.', trait_name='Горная память', trait='Помнит старые тропы.', appearance='Gray fur and blue scarf', **{'class':'Следопыт'}, alignment='Истинно нейтральный', stats=dict(str=10,dex=15,con=13,int=12,wis=14,cha=8))
 
@@ -28,6 +29,7 @@ class EngineTests(unittest.TestCase):
             extract_text({'success':False,'result':None})
     def test_cloud_repair(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         bad=copy.deepcopy(EXAMPLE); bad['stats']['dex']=16
         gen.post=AsyncMock(side_effect=[response(bad),response(EXAMPLE)])
         self.assertEqual(asyncio.run(gen.character([])),EXAMPLE)
@@ -36,6 +38,7 @@ class EngineTests(unittest.TestCase):
         self.assertIn('Абсурд должен быть связным', SYSTEM)
     def test_portrait(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         avatar=b'RIFF'+b'1234'+b'WEBP'+b'test'
         gen.post=AsyncMock(return_value={'success':True,'result':{'image':base64.b64encode(avatar).decode()}})
         self.assertEqual(asyncio.run(gen.portrait(EXAMPLE)),avatar)
@@ -44,17 +47,24 @@ class EngineTests(unittest.TestCase):
         self.assertIn('furry OC profile icon', prompt)
         self.assertIn('upright anthropomorphic animal PERSON', prompt)
         self.assertIn('waist-up close portrait', prompt)
-        self.assertIn('One absurd accessory only', prompt)
+        self.assertIn('At most one character-specific accessory', prompt)
+        self.assertIn('thick dark rounded outlines', prompt)
+        self.assertIn('subtle matte paper grain', prompt)
+        self.assertIn('not a fixed red or orange palette', prompt)
+        self.assertEqual(prompt,AVATAR_STYLE+EXAMPLE['appearance'])
         self.assertIn('no wildlife photography', prompt)
         self.assertIn(EXAMPLE['appearance'], prompt)
         self.assertLessEqual(len(prompt), 2048)
 
     def test_surreal_story_prompt(self):
-        self.assertIn('Минимум три разных сюрреалистических поворота', SYSTEM)
+        self.assertIn('один сильный конфликт', SYSTEM)
+        self.assertIn('панчлайн', SYSTEM)
+        self.assertIn('три существенно разные завязки', PITCH_STYLE)
         self.assertIn('Каждое предложение', SYSTEM)
         self.assertIn('Anthropomorphic', SYSTEM)
     def test_invalid_portrait(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         gen.post=AsyncMock(return_value={'success':True,'result':{'image':'abcd'}})
         with self.assertRaises(GenerationError): asyncio.run(gen.portrait(EXAMPLE))
 
@@ -67,6 +77,7 @@ class EngineTests(unittest.TestCase):
 
     def test_repetitions_trigger_repair(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         bad=copy.deepcopy(EXAMPLE); bad['backstory']='Лестница, лестницы и лестницей. Потом шкаф.'
         gen.post=AsyncMock(side_effect=[response(bad),response(EXAMPLE)])
         self.assertEqual(asyncio.run(gen.character([])),EXAMPLE)
@@ -80,6 +91,7 @@ class EngineTests(unittest.TestCase):
 
     def test_style_cannot_block_valid_card(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         bad_style=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
         gen.post=AsyncMock(side_effect=[response(bad_style),response(bad_style)])
         self.assertEqual(asyncio.run(gen.character([])),bad_style)
@@ -87,6 +99,7 @@ class EngineTests(unittest.TestCase):
 
     def test_style_retry_invalid_falls_back(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         candidate=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
         invalid=copy.deepcopy(EXAMPLE); invalid['stats']['dex']=16
         gen.post=AsyncMock(side_effect=[response(candidate),response(invalid)])
@@ -94,18 +107,21 @@ class EngineTests(unittest.TestCase):
 
     def test_style_retry_api_error_falls_back(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         candidate=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
         gen.post=AsyncMock(side_effect=[response(candidate),GenerationError('HTTP 429')])
         self.assertEqual(asyncio.run(gen.character([])),candidate)
 
     def test_long_valid_story_is_not_fatal(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         candidate=dict(EXAMPLE,backstory='А'*481)
         gen.post=AsyncMock(side_effect=[response(candidate),response(candidate)])
         self.assertEqual(asyncio.run(gen.character([])),candidate)
 
     def test_schema_failure_reports_reason(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         invalid=copy.deepcopy(EXAMPLE); invalid['stats']['dex']=14
         gen.post=AsyncMock(return_value=response(invalid))
         with self.assertRaisesRegex(GenerationError,'Point Buy: 25 вместо 27'):
@@ -114,7 +130,32 @@ class EngineTests(unittest.TestCase):
 
     def test_last_attempt_valid_despite_style(self):
         gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=[])
         invalid=copy.deepcopy(EXAMPLE); invalid['stats']['dex']=16
         candidate=dict(EXAMPLE,backstory='Лестница, лестницы и лестницей. Потом шкаф.')
         gen.post=AsyncMock(side_effect=[response(invalid),response(invalid),response(candidate)])
         self.assertEqual(asyncio.run(gen.character([])),candidate)
+
+    def test_pitch_stage_passes_candidates_without_copying_old_stories(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        pitches=['Самоуверенный продавец выиграл конкурс собственных покупателей.']
+        gen.post=AsyncMock(side_effect=[response({'pitches':pitches}),response(EXAMPLE)])
+        old=dict(EXAMPLE,backstory='Уникальный старый сюжет, не передавать.')
+        self.assertEqual(asyncio.run(gen.character([old])),EXAMPLE)
+        self.assertEqual(gen.post.await_count,2)
+        payload=json.loads(gen.post.await_args.args[1]['messages'][1]['content'])
+        self.assertEqual(payload['comic_pitches'],pitches)
+        self.assertNotIn('backstory',payload['recent_characters'][0])
+
+    def test_invalid_pitch_does_not_prevent_card(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.post=AsyncMock(side_effect=[response({'pitches':None}),response(EXAMPLE)])
+        self.assertEqual(asyncio.run(gen.character([])),EXAMPLE)
+        self.assertEqual(gen.post.await_count,2)
+
+    def test_pitch_api_failure_stops_without_extra_requests(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.post=AsyncMock(side_effect=GenerationError('HTTP 429'))
+        with self.assertRaisesRegex(GenerationError,'HTTP 429'):
+            asyncio.run(gen.character([]))
+        self.assertEqual(gen.post.await_count,1)
