@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 import re
+import time
 from collections import Counter
 import aiohttp
 import discord
@@ -64,54 +65,90 @@ async def send_card(send, data, avatar, member, accepted=False, note=None, **kwa
 
 
 async def acknowledge_and_run(inter, handler, *args, **kwargs):
-    # Acknowledge before database access, role requests or cloud generation.
+    started=time.monotonic()
+    age=(discord.utils.utcnow()-inter.created_at).total_seconds()
+    LOG.info('Interaction dispatch: id=%s event_age_ms=%.0f',inter.id,age*1000)
     try:
         await inter.response.defer(ephemeral=True, thinking=True)
-        LOG.info('Interaction acknowledged: guild=%s id=%s', inter.guild_id, inter.id)
+    except discord.NotFound as exc:
+        if exc.code == 10062:
+            LOG.warning('Interaction expired before ACK: id=%s event_age_ms=%.0f ack_elapsed_ms=%.0f',
+                        inter.id,age*1000,(time.monotonic()-started)*1000)
+            return
+        LOG.exception('Interaction ACK failed: id=%s',inter.id)
+        return
+    except Exception:
+        LOG.exception('Interaction ACK failed: id=%s elapsed_ms=%.0f',
+                      inter.id,(time.monotonic()-started)*1000)
+        return
+    LOG.info('Interaction acknowledged: guild=%s id=%s elapsed_ms=%.0f',
+             inter.guild_id,inter.id,(time.monotonic()-started)*1000)
+    try:
         await handler(inter, *args, **kwargs)
     except Exception:
-        LOG.exception('Interaction failed: guild=%s id=%s', inter.guild_id, inter.id)
+        LOG.exception('Interaction handler failed: guild=%s id=%s', inter.guild_id, inter.id)
         try:
-            if inter.response.is_done():
-                await inter.followup.send('Внутренняя ошибка. Проверь журнал Furrybot.', ephemeral=True)
-            else:
-                await inter.response.send_message('Внутренняя ошибка. Попробуй снова.', ephemeral=True)
+            await inter.followup.send('Внутренняя ошибка. Проверь журнал Furrybot.', ephemeral=True)
         except discord.HTTPException:
             LOG.warning('Не удалось ответить на interaction=%s', inter.id)
+
+
+DRAFT_ID_RE = re.compile(r'furrybot:d:(r|a):([0-9]{1,20}):([0-9]{1,20}):([a-f0-9]{32})')
+LEGACY_DRAFT_RE = re.compile(r'[a-f0-9]{32}')
+PANEL_CREATE = 'furrybot:panel:create:v2'
+PANEL_PROFILE = 'furrybot:panel:profile:v2'
+
+
+def draft_custom_id(action,guild,user,revision):
+    value=f'furrybot:d:{action}:{guild}:{user}:{revision}'
+    if not DRAFT_ID_RE.fullmatch(value) or len(value)>100:
+        raise ValueError('Invalid draft component ID')
+    return value
 
 
 class Panel(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=None)
-        self.bot=bot
-
-    @discord.ui.button(label='Создать / продолжить', style=discord.ButtonStyle.primary, custom_id='furrybot:panel:create:v2')
-    async def create(self, inter, button):
-        await acknowledge_and_run(inter, self.bot.open_panel, generate=True)
-
-    @discord.ui.button(label='Моя фурсона', style=discord.ButtonStyle.secondary, custom_id='furrybot:panel:profile:v2')
-    async def profile(self, inter, button):
-        await acknowledge_and_run(inter, self.bot.open_panel, generate=False)
+        self.add_item(discord.ui.Button(label='Создать / продолжить',style=discord.ButtonStyle.primary,custom_id=PANEL_CREATE))
+        self.add_item(discord.ui.Button(label='Моя фурсона',style=discord.ButtonStyle.secondary,custom_id=PANEL_PROFILE))
+        # Components are serialized, but all dispatch is handled by on_interaction.
+        self.stop()
 
 
 class DraftView(discord.ui.View):
     def __init__(self, bot, guild, user, revision):
-        super().__init__(timeout=900)
-        self.bot,self.guild,self.user,self.revision=bot,guild,user,revision
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(label='Ещё вариант',style=discord.ButtonStyle.secondary,
+                                        custom_id=draft_custom_id('r',guild,user,revision)))
+        self.add_item(discord.ui.Button(label='Принять навсегда',style=discord.ButtonStyle.success,
+                                        custom_id=draft_custom_id('a',guild,user,revision)))
+        self.stop()
 
-    async def interaction_check(self, inter):
-        if inter.guild_id != self.guild or inter.user.id != self.user or not self.bot.is_panel_channel(inter):
-            await inter.response.send_message('Эта карточка не для тебя или панель устарела.',ephemeral=True)
-            return False
-        return True
 
-    @discord.ui.button(label='Ещё вариант',style=discord.ButtonStyle.secondary)
-    async def reroll(self, inter, button):
-        await acknowledge_and_run(inter, self.bot.generate_draft, expected=self.revision)
-
-    @discord.ui.button(label='Принять навсегда',style=discord.ButtonStyle.success)
-    async def accept(self, inter, button):
-        await acknowledge_and_run(inter, self.bot.accept_draft, self.revision)
+async def route_component(bot, inter):
+    """Stateless dispatch; no per-message View callback state is required."""
+    if inter.type != discord.InteractionType.component:
+        return
+    data=inter.data or {}
+    custom_id=data.get('custom_id','')
+    if not isinstance(custom_id,str):
+        return
+    if data.get('component_type') != discord.ComponentType.button.value:
+        return
+    # Only route components on messages sent by this application.
+    if not bot.user or not inter.message or inter.message.author.id != bot.user.id:
+        return
+    LOG.info('Interaction received: guild=%s id=%s custom_id=%s',inter.guild_id,inter.id,custom_id[:100])
+    if custom_id in (PANEL_CREATE,PANEL_PROFILE):
+        await acknowledge_and_run(inter,bot.open_panel,generate=custom_id==PANEL_CREATE)
+        return
+    match=DRAFT_ID_RE.fullmatch(custom_id)
+    if match:
+        action,guild,user,revision=match.groups()
+        await acknowledge_and_run(inter,bot.handle_draft_component,action,int(guild),int(user),revision)
+        return
+    if LEGACY_DRAFT_RE.fullmatch(custom_id) or custom_id.startswith('furrybot:'):
+        await acknowledge_and_run(inter,bot.expired_component)
 
 
 class FurBot(discord.Client):
@@ -130,7 +167,6 @@ class FurBot(discord.Client):
     async def setup_hook(self):
         self.session=aiohttp.ClientSession()
         self.cloud=CloudGenerator(self.session,self.cfg['CLOUDFLARE_ACCOUNT_ID'],self.cfg['CLOUDFLARE_API_TOKEN'],self.cfg['TEXT_MODEL'],self.cfg['IMAGE_MODEL'],int(self.cfg['IMAGE_STEPS']))
-        self.add_view(Panel(self))
         self.legacy_tree=app_commands.CommandTree(self)
 
     async def clear_legacy_commands(self,guild):
@@ -145,8 +181,19 @@ class FurBot(discord.Client):
         LOG.info('Подключён как %s',self.user)
 
     async def on_interaction(self, inter):
-        if inter.type == discord.InteractionType.component:
-            LOG.info('Interaction received: guild=%s id=%s', inter.guild_id, inter.id)
+        await route_component(self,inter)
+
+    async def expired_component(self,inter):
+        await inter.followup.send('Эта кнопка относится к старой карточке. Открой «Создать / продолжить» в канале фуррификации.',ephemeral=True)
+
+    async def handle_draft_component(self,inter,action,guild,user,revision):
+        if inter.guild_id != guild or inter.user.id != user or not self.is_panel_channel(inter):
+            await inter.followup.send('Эта карточка не для тебя или панель устарела.',ephemeral=True)
+            return
+        if action == 'r':
+            await self.generate_draft(inter,expected=revision)
+        elif action == 'a':
+            await self.accept_draft(inter,revision)
 
     async def close(self):
         try:
