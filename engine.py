@@ -182,12 +182,15 @@ class CloudGenerator:
     def reference_form(self, data: dict) -> aiohttp.FormData:
         form = aiohttp.FormData()
         prompt = (
-            'Create a NEW single furry profile portrait in the DRAWING STYLE of reference images 0 and 1. '
-            'Use those images ONLY as a reference for linework, shape design, flat shadows and paper texture. '
-            'Do not copy the species, facial features, outfit, expression, colors, pose or props of the references. '
-            'The new character must be unmistakably the requested species, not a generic fox or wolf. '
-            'Fill the square frame with one head-and-shoulders or chest-up portrait, no panel divisions. '
-            + AVATAR_STYLE + 'Requested species (Russian): ' + data['species'] + '. ' + data['appearance']
+            'Create a new character portrait as a companion illustration to image 0 and image 1, '
+            'using exactly their graphic drawing technique, silhouette treatment, line weight, angular shapes, '
+            'flat shadow design, pale sticker keyline, print texture and bold close-up composition. '
+            'Use images 0 and 1 ONLY as a reference for drawing technique and framing. '
+            'The subject is a different individual of the requested species, with its own face, outfit, expression and palette. '
+            'Requested species (Russian): ' + data['species'] + '. '
+            + AVATAR_STYLE + data['appearance'] +
+            '. Final composition: the large head dominates the square, chest cut by the bottom edge, '
+            'shoulders reach both sides. Match the reference drawing style rather than a generic cartoon animal.'
         )
         form.add_field('prompt',prompt)
         form.add_field('width','1024')
@@ -208,6 +211,9 @@ class CloudGenerator:
         else:
             prompt = AVATAR_STYLE + data['appearance']
             payload = {'prompt':prompt,'steps':self.image_steps}
+        LOG.info('Avatar generation: model=%s, reference_count=%s, requested_size=%s',
+                 self.image_model, len(STYLE_REFERENCES) if self.image_model == KLEIN_MODEL else 0,
+                 '1024x1024' if self.image_model == KLEIN_MODEL else 'model default')
         result = await self.post(self.image_model, payload, 180)
         try:
             img = base64.b64decode(result['result']['image'], validate=True)
