@@ -3,7 +3,7 @@ import base64
 import copy
 import json
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from engine import CloudGenerator, GenerationError, SYSTEM, extract_text, validate, avatar_filename, KLEIN_MODEL, KLEIN_QUALITY_MODEL, STYLE_REFERENCES
 from style import AVATAR_STYLE, PITCH_STYLE
 
@@ -13,6 +13,11 @@ def response(data):
     return {'success':True,'result':{'response':data}}
 
 class EngineTests(unittest.TestCase):
+    def setUp(self):
+        patcher=patch('engine.select_species',return_value={'ru':'Снежный барс','en':'snow leopard','group':'felids'})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_valid(self):
         self.assertEqual(validate(copy.deepcopy(EXAMPLE)), EXAMPLE)
     def test_invalid_stats(self):
@@ -47,17 +52,13 @@ class EngineTests(unittest.TestCase):
         self.assertIn('furry OC profile icon', prompt)
         self.assertIn('upright anthropomorphic animal PERSON', prompt)
         self.assertIn('tight chest-up portrait', prompt)
-        self.assertIn('70 percent of the canvas width', prompt)
-        self.assertIn('thin pale keyline', prompt)
-        self.assertIn('layered fur tufts', prompt)
-        self.assertIn('varied line weight', prompt)
-        self.assertIn('several coordinated tones', prompt)
+        self.assertIn('head dominates the image', prompt)
+        self.assertIn('Thin pale keyline', prompt)
+        self.assertIn('angular fur tufts', prompt)
+        self.assertIn('flat colors', prompt)
         self.assertIn('subtle matte paper grain', prompt)
-        self.assertIn('Not a logo', prompt)
-        self.assertIn('exaggerated cartoon proportions', prompt)
-        self.assertIn('no realistic fur', prompt)
+        self.assertIn('no logo or mascot', prompt)
         self.assertNotIn('exactly one main shadow tone', prompt)
-        self.assertNotIn('few large sharply pointed', prompt)
         self.assertIn('not a fixed red or orange palette', prompt)
         self.assertEqual(prompt,AVATAR_STYLE+EXAMPLE['appearance'])
         self.assertIn('no wildlife photography', prompt)
@@ -201,10 +202,10 @@ class EngineTests(unittest.TestCase):
         self.assertIn(EXAMPLE['species'],fields['prompt'])
         self.assertIn(EXAMPLE['appearance'],fields['prompt'])
         self.assertIn('ONLY as a reference',fields['prompt'])
-        self.assertIn('companion illustration to image 0 and image 1',fields['prompt'])
-        self.assertIn('chest cut by the bottom edge',fields['prompt'])
+        self.assertIn('Draw a NEW anthropomorphic snow leopard',fields['prompt'])
+        self.assertIn('Chest cut by the bottom edge',fields['prompt'])
         self.assertIn('reference cartoon stylization',fields['prompt'])
-        self.assertIn('graphic cel shadows',fields['prompt'])
+        self.assertIn('flat colored shadows',fields['prompt'])
         self.assertNotIn('waist-up',fields['prompt'])
         self.assertNotIn('head-and-shoulders or',fields['prompt'])
         for i,path in enumerate(STYLE_REFERENCES):
@@ -257,3 +258,12 @@ class EngineTests(unittest.TestCase):
     def test_demonstration_names_not_reused(self):
         from style import unique_names, NAME_DEMOS
         self.assertEqual(unique_names([*NAME_DEMOS,'Мира'],[]),['Мира'])
+
+    def test_selected_species_cannot_be_overridden(self):
+        gen=CloudGenerator(None,'account','key','text','image',4)
+        gen.draft_pitches=AsyncMock(return_value=([],[]))
+        gen.post=AsyncMock(side_effect=[response(dict(EXAMPLE,species='Бобёр')),response(EXAMPLE)])
+        self.assertEqual(asyncio.run(gen.character([])),EXAMPLE)
+        payload=json.loads(gen.post.await_args.args[1]['messages'][1]['content'])
+        self.assertEqual(payload['required_species']['ru'],'Снежный барс')
+        self.assertIn('Вид уже выбран',payload['correction'])

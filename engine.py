@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from species import select_species, species_key, LOOKUP
 import aiohttp
 from style import STYLE, PITCH_STYLE, AVATAR_STYLE, direction, repetition_issue, unique_names, normalized_name, NAME_DEMOS
 
@@ -144,10 +145,12 @@ class CloudGenerator:
 
     async def character(self, recent: list[dict]) -> dict:
         creative_direction = direction(recent)
+        selected = select_species(recent)
+        creative_direction['required_species'] = selected
         pitches,names = await self.draft_pitches(creative_direction)
         used_names={normalized_name(n) for n in (*creative_direction['avoid_names'],*NAME_DEMOS)}
         candidate_names={normalized_name(n) for n in names}
-        identities = [{k:row[k] for k in ('name','species','class') if k in row}
+        identities = [{k:row[k] for k in ('name','class') if k in row}
                       for row in recent[:8]]
         correction = ''
         fallback = None
@@ -156,7 +159,7 @@ class CloudGenerator:
             try:
                 result = await self.post(self.text_model, {
                     'messages': [{'role':'system','content':SYSTEM}, {'role':'user','content':json.dumps(
-                        {'recent_characters':identities,'direction':creative_direction,'comic_pitches':pitches,'name_candidates':names,'name_style':creative_direction['name_style'],'correction':correction}, ensure_ascii=False)}],
+                        {'recent_characters':identities,'direction':creative_direction,'comic_pitches':pitches,'name_candidates':names,'name_style':creative_direction['name_style'],'required_species':selected,'correction':correction}, ensure_ascii=False)}],
                     'response_format': {'type':'json_schema','json_schema':SCHEMA},
                     'max_tokens':2200,
                     'temperature':0.85,
@@ -168,6 +171,9 @@ class CloudGenerator:
                 raise
             try:
                 data = validate(extract_text(result))
+                if species_key(data['species']) != species_key(selected['ru']):
+                    raise GenerationError(f'Вид уже выбран генератором: {selected["ru"]}. Используй его, не меняй вид.')
+                data['species']=selected['ru']
                 if normalized_name(data['name']) in used_names:
                     raise GenerationError('Имя уже встречалось в недавних генерациях. Выбери другое имя и согласуй с ним биографию.')
                 if candidate_names and normalized_name(data['name']) not in candidate_names:
@@ -201,16 +207,17 @@ class CloudGenerator:
 
     def reference_form(self, data: dict) -> aiohttp.FormData:
         form = aiohttp.FormData()
+        species = LOOKUP.get(species_key(data['species']))
+        animal = species[2] if species else data['species']
         prompt = (
-            'Create a new character portrait as a companion illustration to image 0 and image 1, '
-            'matching their exaggerated cartoon proportions, expressive shape design, tapered ink linework, layered flat fur shapes, '
-            'graphic cel shadows, pale keyline and vintage print texture. Match the reference cartoon stylization, not realism or a simple logo. '
+            'Draw a NEW anthropomorphic ' + animal + ' as a square character portrait. '
             'Use images 0 and 1 ONLY as a reference for drawing technique and framing. '
-            'The subject is a different individual of the requested species, with its own face, outfit, expression and palette. '
-            'Requested species (Russian): ' + data['species'] + '. '
+            'Replace the reference characters completely; do not copy their species, goggles, clothes or props. '
+            'Reproduce their hand-drawn cartoon linework, angular graphic fur, expressive faces, flat colored shadows '
+            'and warm textured screen-print finish. '
+            'Requested species: ' + data['species'] + '. '
             + AVATAR_STYLE + data['appearance'] +
-            '. Final composition: the large head dominates the square, chest cut by the bottom edge, '
-            'shoulders reach both sides. Match the reference drawing style rather than a generic cartoon animal.'
+            '. Chest cut by the bottom edge; do not include the tail. Match the reference cartoon stylization.'
         )
         form.add_field('prompt',prompt)
         form.add_field('width','1024')

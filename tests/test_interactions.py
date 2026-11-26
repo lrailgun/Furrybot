@@ -176,3 +176,35 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         progress.delete.assert_awaited_once()
         inter.edit_original_response.assert_not_awaited()
         self.assertEqual(bot.busy,set())
+
+    async def test_create_does_not_restore_old_draft(self):
+        from unittest.mock import Mock
+        inter=fake_inter(PANEL_CREATE)
+        bot=SimpleNamespace(store=SimpleNamespace(get=Mock(return_value=None),draft=Mock(return_value=(REV,{},b'a'))),
+                            is_panel_channel=lambda inter:True,show_draft=AsyncMock(),generate_draft=AsyncMock())
+        await FurBot.open_panel(bot,inter,generate=True)
+        bot.generate_draft.assert_awaited_once_with(inter)
+        bot.show_draft.assert_not_awaited()
+        await FurBot.open_panel(bot,inter,generate=False)
+        bot.show_draft.assert_awaited_once_with(inter,(REV,{},b'a'))
+
+    async def test_cleanup_protects_panel_other_authors_and_pins(self):
+        import asyncio
+        from unittest.mock import Mock, patch
+        def item(id,author=900,pinned=False):
+            return SimpleNamespace(id=id,author=SimpleNamespace(id=author),pinned=pinned,delete=AsyncMock())
+        panel,old,other,pin=item(10),item(11),item(12,901),item(13,pinned=True)
+        async def history(limit):
+            for m in (panel,old,other,pin):
+                yield m
+        channel=SimpleNamespace(id=4,fetch_message=AsyncMock(return_value=panel),history=history)
+        guild=SimpleNamespace(id=1,get_channel=Mock(return_value=channel))
+        message=SimpleNamespace(guild=guild,channel=SimpleNamespace(id=5),reply=AsyncMock(),
+                                author=SimpleNamespace(id=2,guild_permissions=SimpleNamespace(administrator=True)))
+        bot=SimpleNamespace(user=SimpleNamespace(id=900),install_lock=asyncio.Lock(),
+                            store=SimpleNamespace(installation=Mock(return_value={'channel':4,'panel':10})))
+        with patch('bot.discord.TextChannel',type(channel)):
+            await FurBot.clean_channel(bot,message)
+        old.delete.assert_awaited_once()
+        for protected in (panel,other,pin):
+            protected.delete.assert_not_awaited()

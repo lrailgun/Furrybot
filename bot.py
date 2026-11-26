@@ -143,7 +143,7 @@ def draft_custom_id(action,guild,user,revision):
 class Panel(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(label='Создать / продолжить',style=discord.ButtonStyle.primary,custom_id=PANEL_CREATE))
+        self.add_item(discord.ui.Button(label='Создать новую',style=discord.ButtonStyle.primary,custom_id=PANEL_CREATE))
         self.add_item(discord.ui.Button(label='Моя фурсона',style=discord.ButtonStyle.secondary,custom_id=PANEL_PROFILE))
         # Components are serialized, but all dispatch is handled by on_interaction.
         self.stop()
@@ -225,7 +225,7 @@ class FurBot(discord.Client):
         await route_component(self,inter)
 
     async def expired_component(self,inter):
-        await inter.followup.send('Эта кнопка относится к старой карточке. Открой «Создать / продолжить» в канале фуррификации.',ephemeral=True)
+        await inter.followup.send('Эта кнопка относится к старой карточке. Открой «Создать новую» в канале фуррификации.',ephemeral=True)
 
     async def handle_draft_component(self,inter,action,guild,user,revision):
         if inter.guild_id != guild or inter.user.id != user or not self.is_panel_channel(inter):
@@ -285,12 +285,13 @@ class FurBot(discord.Client):
         if final:
             note=await self.grant_role(inter.user)
             await edit_interaction_card(inter,*final,inter.user,accepted=True,note=note or 'Твоя принятая фурсона.')
+        elif generate:
+            # The create button always requests a fresh draft, even after restart.
+            await self.generate_draft(inter)
         elif (draft:=self.store.draft(*key)):
             await self.show_draft(inter,draft)
-        elif generate:
-            await self.generate_draft(inter)
         else:
-            await inter.followup.send('Фурсоны пока нет. Нажми «Создать / продолжить».',ephemeral=True)
+            await inter.followup.send('Фурсоны пока нет. Нажми «Создать новую».',ephemeral=True)
 
     async def generate_draft(self,inter,expected=None):
         key=(inter.guild_id,inter.user.id)
@@ -333,7 +334,7 @@ class FurBot(discord.Client):
             await generation_failure(inter,replacing,f'Генерация не завершена: {exc}. Старый черновик, если был, сохранён.')
         except Exception:
             LOG.exception('Ошибка генерации')
-            message=('Новый черновик сохранён, но не удалось показать карточку. Открой «Создать / продолжить».'
+            message=('Новый черновик сохранён, но не удалось показать карточку. Открой «Создать новую».'
                      if saved else 'Внутренняя ошибка. Открой панель повторно.')
             try:
                 await generation_failure(inter,replacing,message)
@@ -491,6 +492,38 @@ class FurBot(discord.Client):
         finally:
             self.busy.discard(key)
 
+    async def clean_channel(self,message):
+        if not message.author.guild_permissions.administrator:
+            await message.reply('Очистка доступна только администраторам Discord.')
+            return
+        async with self.install_lock:
+            setup=self.store.installation(message.guild.id)
+            channel=message.guild.get_channel(setup['channel']) if setup else None
+            if not isinstance(channel,discord.TextChannel) or not setup.get('panel'):
+                await message.reply('Канал или панель не найдены. Сначала выполни !furry install.')
+                return
+            # Verify the stored panel exists before deleting anything.
+            panel=await channel.fetch_message(setup['panel'])
+            if panel.author.id!=self.user.id:
+                await message.reply('Не удалось проверить панель. Очистка отменена.')
+                return
+            deleted=0
+            failed=0
+            async for item in channel.history(limit=None):
+                if item.id==panel.id or item.author.id!=self.user.id or item.pinned:
+                    continue
+                try:
+                    await item.delete()
+                    deleted+=1
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException:
+                    failed+=1
+            LOG.info('Channel cleanup: guild=%s actor=%s channel=%s deleted=%s failed=%s',
+                     message.guild.id,message.author.id,channel.id,deleted,failed)
+            await message.reply(f'Удалено сообщений бота: {deleted}. Ошибок: {failed}. Панель, закреплённые сообщения и база фурсон сохранены.',
+                                delete_after=15 if message.channel.id==channel.id else None)
+
     async def on_message(self,message):
         if message.author.bot or not message.guild:
             return
@@ -502,10 +535,15 @@ class FurBot(discord.Client):
         try:
             if cmd=='install':
                 await self.install_panel(message,arg)
+            elif cmd=='clean':
+                if arg:
+                    await message.reply('Использование: !furry clean')
+                    return
+                await self.clean_channel(message)
             elif cmd in ('help','generate','reroll','accept'):
                 setup=self.store.installation(message.guild.id)
                 panel=f'<#{setup["channel"]}>' if setup else 'Панель ещё не установлена.'
-                await message.reply(f'Панель: {panel}\n`!furry profile [@участник]` · `!furry avatar [@участник]` · `!furry roster` · `!furry species`\nАдмин: `!furry install`, `!furry regenerate @участник`. Генерация и принятие — кнопками панели.')
+                await message.reply(f'Панель: {panel}\n`!furry profile [@участник]` · `!furry avatar [@участник]` · `!furry roster` · `!furry species`\nАдмин: `!furry install`, `!furry regenerate @участник`, `!furry clean`. Генерация и принятие — кнопками панели.')
             elif cmd in ('profile','fursona','avatar'):
                 member=await self.target(message,arg)
                 final=self.store.get(message.guild.id,member.id)
