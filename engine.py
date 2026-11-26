@@ -5,10 +5,12 @@ import json
 import logging
 from pathlib import Path
 import aiohttp
-from style import STYLE, PITCH_STYLE, AVATAR_STYLE, direction, repetition_issue
+from style import STYLE, PITCH_STYLE, AVATAR_STYLE, direction, repetition_issue, unique_names, normalized_name
 
 LOG = logging.getLogger('furrybot.engine')
 KLEIN_MODEL = '@cf/black-forest-labs/flux-2-klein-4b'
+KLEIN_QUALITY_MODEL = '@cf/black-forest-labs/flux-2-klein-9b'
+REFERENCE_MODELS = (KLEIN_MODEL,KLEIN_QUALITY_MODEL)
 STYLE_REFERENCES = tuple(Path(__file__).resolve().parent / 'assets' / f'furry-style-{i}.jpg' for i in (1, 2))
 MIN_STORY_LENGTH = 400
 PREFERRED_STORY_LENGTH = 750
@@ -34,8 +36,9 @@ SCHEMA = {
 
 PITCH_SCHEMA = {
     'type':'object', 'additionalProperties':False,
-    'properties':{'pitches':{'type':'array','items':{'type':'string'},'minItems':3,'maxItems':3}},
-    'required':['pitches'],
+    'properties':{'pitches':{'type':'array','items':{'type':'string'},'minItems':3,'maxItems':3},
+                  'names':{'type':'array','items':{'type':'string'},'minItems':5,'maxItems':5}},
+    'required':['pitches','names'],
 }
 
 SYSTEM = STYLE + """\nВерни только JSON по схеме. Русский язык, кроме appearance. species — конкретный вид по-русски. class и alignment из схемы. Статы — шесть целых 8–15, стоимость ровно 27: 8=0, 9=1, 10=2, 11=3, 12=4, 13=5, 14=7, 15=9 (надёжный способ: переставь числа 15,14,13,12,10,8 между шестью характеристиками в соответствии с классом; этот набор уже стоит 27). name/species/trait_name до 60 символов, background до 80, personality/trait до 260, backstory 400–850 (цель 450–750), appearance до 350. background — короткая профессия или статус, personality — одна конкретная смешная черта (до двух коротких фраз), trait_name и trait — короткая комическая способность без числовых бонусов. Вид, класс и реквизит согласованы с биографией. Не используй Markdown, ссылки, упоминания или реальные персональные данные."""
@@ -110,29 +113,32 @@ class CloudGenerator:
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             raise GenerationError('Cloudflare Workers AI недоступен или вернул некорректный ответ') from exc
 
-    async def draft_pitches(self, creative_direction: dict) -> list[str]:
+    async def draft_pitches(self, creative_direction: dict) -> tuple[list[str],list[str]]:
         result = await self.post(self.text_model, {
             'messages': [{'role':'system','content':PITCH_STYLE},
                          {'role':'user','content':json.dumps(creative_direction,ensure_ascii=False)}],
             'response_format': {'type':'json_schema','json_schema':PITCH_SCHEMA},
-            'max_tokens':650, 'temperature':1.0,
+            'max_tokens':950, 'temperature':1.0,
         }, 90)
         try:
-            values = extract_text(result).get('pitches')
+            idea_data = extract_text(result)
+            names = unique_names(idea_data.get('names'),creative_direction.get('avoid_names',[]))
+            values = idea_data.get('pitches')
             if not isinstance(values,list):
                 raise GenerationError('Некорректные комедийные завязки')
             pitches = list(dict.fromkeys(v.strip() for v in values
                            if isinstance(v,str) and 20 <= len(v.strip()) <= 350))
             if not pitches:
                 raise GenerationError('Пустые комедийные завязки')
-            return pitches[:3]
+            return pitches[:3],names
         except GenerationError as exc:
             LOG.warning('Pitch response invalid: %s; generating card directly',exc)
-            return []
+            return [],[]
 
     async def character(self, recent: list[dict]) -> dict:
         creative_direction = direction(recent)
-        pitches = await self.draft_pitches(creative_direction)
+        pitches,names = await self.draft_pitches(creative_direction)
+        used_names={normalized_name(n) for n in creative_direction['avoid_names']}
         identities = [{k:row[k] for k in ('name','species','class') if k in row}
                       for row in recent[:8]]
         correction = ''
@@ -142,7 +148,7 @@ class CloudGenerator:
             try:
                 result = await self.post(self.text_model, {
                     'messages': [{'role':'system','content':SYSTEM}, {'role':'user','content':json.dumps(
-                        {'recent_characters':identities,'direction':creative_direction,'comic_pitches':pitches,'correction':correction}, ensure_ascii=False)}],
+                        {'recent_characters':identities,'direction':creative_direction,'comic_pitches':pitches,'name_candidates':names,'name_style':creative_direction['name_style'],'correction':correction}, ensure_ascii=False)}],
                     'response_format': {'type':'json_schema','json_schema':SCHEMA},
                     'max_tokens':2200,
                     'temperature':0.85,
@@ -154,6 +160,8 @@ class CloudGenerator:
                 raise
             try:
                 data = validate(extract_text(result))
+                if normalized_name(data['name']) in used_names:
+                    raise GenerationError('Имя уже встречалось в недавних генерациях. Выбери другое имя и согласуй с ним биографию.')
                 if len(data['backstory']) < MIN_STORY_LENGTH:
                     raise GenerationError(f'Предыстория слишком короткая: {len(data["backstory"])} символов; нужно минимум {MIN_STORY_LENGTH}. Разверни конфликт и добавь конкретное последствие и панчлайн.')
             except GenerationError as exc:
@@ -206,14 +214,14 @@ class CloudGenerator:
         return form
 
     async def portrait(self, data: dict) -> bytes:
-        if self.image_model == KLEIN_MODEL:
+        if self.image_model in REFERENCE_MODELS:
             payload = self.reference_form(data)
         else:
             prompt = AVATAR_STYLE + data['appearance']
             payload = {'prompt':prompt,'steps':self.image_steps}
         LOG.info('Avatar generation: model=%s, reference_count=%s, requested_size=%s',
-                 self.image_model, len(STYLE_REFERENCES) if self.image_model == KLEIN_MODEL else 0,
-                 '1024x1024' if self.image_model == KLEIN_MODEL else 'model default')
+                 self.image_model, len(STYLE_REFERENCES) if self.image_model in REFERENCE_MODELS else 0,
+                 '1024x1024' if self.image_model in REFERENCE_MODELS else 'model default')
         result = await self.post(self.image_model, payload, 180)
         try:
             img = base64.b64decode(result['result']['image'], validate=True)

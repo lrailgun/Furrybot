@@ -64,12 +64,26 @@ async def send_card(send, data, avatar, member, accepted=False, note=None, **kwa
     await send(content=body, **kwargs)
 
 
-async def acknowledge_and_run(inter, handler, *args, **kwargs):
+async def edit_interaction_card(inter, data, avatar, member, accepted=False, note=None, view=None):
+    """Replace the original private interaction message, including its attachment."""
+    body,file=card(data,avatar,member,accepted=accepted)
+    if note:
+        body=note+'\n\n'+body
+    if len(body)>2000:
+        body=body[:1999]+'…'
+    try:
+        await inter.edit_original_response(content=body,attachments=[file],view=view,
+                                           allowed_mentions=discord.AllowedMentions.none())
+    finally:
+        file.close()
+
+
+async def acknowledge_and_run(inter, handler, *args, update_message=False, **kwargs):
     started=time.monotonic()
     age=(discord.utils.utcnow()-inter.created_at).total_seconds()
     LOG.info('Interaction dispatch: id=%s event_age_ms=%.0f',inter.id,age*1000)
     try:
-        await inter.response.defer(ephemeral=True, thinking=True)
+        await inter.response.defer(ephemeral=True, thinking=not update_message)
     except discord.NotFound as exc:
         if exc.code == 10062:
             LOG.warning('Interaction expired before ACK: id=%s event_age_ms=%.0f ack_elapsed_ms=%.0f',
@@ -145,7 +159,14 @@ async def route_component(bot, inter):
     match=DRAFT_ID_RE.fullmatch(custom_id)
     if match:
         action,guild,user,revision=match.groups()
-        await acknowledge_and_run(inter,bot.handle_draft_component,action,int(guild),int(user),revision)
+        # Updating the source is safe only for its owner and a private bot message.
+        private=bool(getattr(getattr(inter.message,'flags',None),'ephemeral',False))
+        if not private:
+            await acknowledge_and_run(inter,bot.expired_component)
+            return
+        same_owner=inter.guild_id==int(guild) and inter.user.id==int(user)
+        await acknowledge_and_run(inter,bot.handle_draft_component,action,int(guild),int(user),revision,
+                                  update_message=same_owner)
         return
     if LEGACY_DRAFT_RE.fullmatch(custom_id) or custom_id.startswith('furrybot:'):
         await acknowledge_and_run(inter,bot.expired_component)
@@ -233,7 +254,7 @@ class FurBot(discord.Client):
 
     async def show_draft(self,inter,draft):
         revision,data,avatar=draft
-        await send_card(inter.followup.send,data,avatar,inter.user,note='Это черновик. Принятие необратимо для обычного участника.',view=DraftView(self,inter.guild_id,inter.user.id,revision),ephemeral=True)
+        await edit_interaction_card(inter,data,avatar,inter.user,note='Это черновик. Принятие необратимо для обычного участника.',view=DraftView(self,inter.guild_id,inter.user.id,revision))
 
     async def open_panel(self,inter,generate):
         if not self.is_panel_channel(inter):
@@ -243,7 +264,7 @@ class FurBot(discord.Client):
         final=self.store.get(*key)
         if final:
             note=await self.grant_role(inter.user)
-            await send_card(inter.followup.send,*final,inter.user,accepted=True,note=note or 'Твоя принятая фурсона.',ephemeral=True)
+            await edit_interaction_card(inter,*final,inter.user,accepted=True,note=note or 'Твоя принятая фурсона.')
         elif (draft:=self.store.draft(*key)):
             await self.show_draft(inter,draft)
         elif generate:
@@ -293,7 +314,7 @@ class FurBot(discord.Client):
         self.busy.add(key)
         try:
             note=await self.grant_role(inter.user)
-            await send_card(inter.followup.send,*self.store.get(*key),inter.user,accepted=True,note=note or 'Фурсона принята! Роль выдана.',ephemeral=True)
+            await edit_interaction_card(inter,*self.store.get(*key),inter.user,accepted=True,note=note or 'Фурсона принята! Роль выдана.')
         finally:
             self.busy.discard(key)
 
