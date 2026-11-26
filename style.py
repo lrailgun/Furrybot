@@ -50,26 +50,20 @@ def unique_names(values, recent_names):
 
 # Canonical Furryville style: approved retro graphic bust portraits.
 AVATAR_STYLE = (
-    'Square furry OC profile icon. A single upright anthropomorphic animal PERSON, drawn as a tight chest-up portrait, '
-    'like a bold illustrated character sticker on a vintage printed poster. Head and ears occupy the upper two thirds; '
-    'the head spans roughly 70 percent of the canvas width. Shoulders extend to the side edges and the clothed chest '
-    'continues beyond the bottom edge. Crop at mid-chest; legs, feet and tail are outside the frame. '
-    'Three-quarter head turn, chin slightly raised, expressive confident face, strong asymmetric silhouette. '
-    'Construct cheeks and fur from a few large sharply pointed zigzag tufts, not individual hairs. '
-    'Shape the muzzle and ears according to the requested species. Use simple curved dark eyelids, a small solid nose, '
-    'a broad readable mouth and a few angular eyebrow shapes; expression varies by character. '
-    'Thick near-black rounded outlines, very thick outer silhouette, fewer thinner interior lines. '
-    'Large uninterrupted matte color regions, sharp-edged shadow shapes, exactly one main shadow tone and one highlight tone '
-    'on each material. Pale warm cream muzzle and highlights where appropriate to the species. '
-    'A thin pale cream keyline separates the silhouette from the colored background, like a die-cut sticker. '
-    'Subtle matte paper grain evenly over flat colors, like retro screen printing. No gradients or airbrushed highlights. '
-    'A saturated mid-tone background with a few oversized flat graphic rays, stars or geometric shapes, no realistic setting. '
-    'Choose an individual coordinated palette, not a fixed red or orange palette. '
-    'One distinct outfit and at most one character-specific accessory. '
-    'One image, no panel divisions, no lettering, no flags, no political emblems, no wildlife photography, '
-    'no photorealism, no 3D rendering, no anime rendering, no full-body mascot, no sexualization, no smoking. '
-    'Character: ')
-
+    "Square furry OC profile icon, a single upright anthropomorphic animal PERSON in a tight chest-up portrait. "
+    "High-end hand-drawn 2D furry character illustration with the graphic language of a vintage screen-printed poster. "
+    "Head spans roughly 70 percent of the canvas width, clothed chest cut by the bottom edge, shoulders reaching both sides. "
+    "Three-quarter view with a natural expressive pose. Species-specific skull, muzzle, nose, ears and facial proportions, not a generic canine face. "
+    "Richly articulated layered fur tufts: large angular cheek and neck shapes subdivided into smaller tapered locks, overlapping edges, fine accent strokes at tips. "
+    "Expressive sculpted eyebrows, carefully drawn eyelids, pupils, iris highlights, muzzle planes, whisker roots and cheek shapes where anatomically appropriate. "
+    "Confident dark ink linework with varied line weight: bold outer contour, tapered inner contours and fine details; not uniformly thick outlines. "
+    "Dimensional graphic cel shading with several coordinated tones: crisp interlocking shadow shapes under cheek fur, jaw, ears and clothing, smaller reflected-light accents and selective rim highlights. "
+    "Readable textile folds, seams, collar and accessory details; carefully designed silhouette. "
+    "Rich controlled colors and warm print highlights, subtle matte paper grain and restrained ink texture. "
+    "Thin pale keyline and layered graphic background shapes, varied palette per character, not a fixed red or orange palette. "
+    "Professional finished character commission, not a logo, emoji, flat vector mascot, minimalist icon or coloring-book drawing. "
+    "One clothed character, no full body, no collage, no lettering, no flags, no political emblems, no wildlife photography, no 3D rendering, no sexualization, no smoking. "
+    "Character: ")
 
 
 STOP = set('который которая которые которого которой потому после перед когда чтобы теперь затем очень только просто также такой такая своей своего своих этого своей самого самой через между каждый каждая самые снова вообще именно может можно должен должна будет были своего'.split())

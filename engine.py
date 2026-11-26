@@ -199,8 +199,8 @@ class CloudGenerator:
         form = aiohttp.FormData()
         prompt = (
             'Create a new character portrait as a companion illustration to image 0 and image 1, '
-            'using exactly their graphic drawing technique, silhouette treatment, line weight, angular shapes, '
-            'flat shadow design, pale sticker keyline, print texture and bold close-up composition. '
+            'matching their level of finished illustration detail, expressive species anatomy, tapered ink linework, layered fur shapes, '
+            'dimensional graphic shadows, pale keyline and vintage print texture. Do not reduce the artwork to a simple logo or mascot. '
             'Use images 0 and 1 ONLY as a reference for drawing technique and framing. '
             'The subject is a different individual of the requested species, with its own face, outfit, expression and palette. '
             'Requested species (Russian): ' + data['species'] + '. '
