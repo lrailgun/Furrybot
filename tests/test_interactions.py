@@ -3,7 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import discord
 from bot import (FurBot, Panel, DraftView, PANEL_CREATE, PANEL_PROFILE,
-                 draft_custom_id, route_component, edit_interaction_card)
+                 draft_custom_id, route_component, edit_interaction_card,
+                 generation_progress, generation_failure, GENERATION_STATUS)
 
 REV='a'*32
 
@@ -15,7 +16,7 @@ def fake_bot():
 def fake_inter(custom_id,author=900):
     return SimpleNamespace(type=discord.InteractionType.component,
         data={'custom_id':custom_id,'component_type':2},
-        message=SimpleNamespace(author=SimpleNamespace(id=author),flags=SimpleNamespace(ephemeral=True)),
+        message=SimpleNamespace(author=SimpleNamespace(id=author),flags=SimpleNamespace(ephemeral=True),content='Прежняя карточка'),
         guild_id=1,user=SimpleNamespace(id=2),id=100,
         created_at=discord.utils.utcnow(),
         response=SimpleNamespace(defer=AsyncMock()),
@@ -118,3 +119,46 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                                     SimpleNamespace(display_name='Member'),accepted=True)
         self.assertIsNone(inter.edit_original_response.await_args.kwargs['view'])
         self.assertIn('Принятая фурсона',inter.edit_original_response.await_args.kwargs['content'])
+
+    async def test_initial_generation_status(self):
+        inter=fake_inter(PANEL_CREATE)
+        old=await generation_progress(inter,replacing=False)
+        self.assertEqual(old,'')
+        self.assertEqual(inter.edit_original_response.await_args.kwargs['content'],GENERATION_STATUS)
+        self.assertNotIn('attachments',inter.edit_original_response.await_args.kwargs)
+
+    async def test_reroll_status_preserves_attachment(self):
+        inter=fake_inter(draft_custom_id('r',1,2,REV))
+        old=await generation_progress(inter,replacing=True)
+        self.assertEqual(old,'Прежняя карточка')
+        kwargs=inter.edit_original_response.await_args.kwargs
+        self.assertIn(GENERATION_STATUS,kwargs['content'])
+        self.assertIn(old,kwargs['content'])
+        self.assertNotIn('attachments',kwargs)
+        self.assertNotIn('view',kwargs)
+        await generation_failure(inter,old,'Ошибка')
+        self.assertEqual(inter.edit_original_response.await_args.kwargs['content'],'Ошибка\n\nПрежняя карточка')
+
+    async def test_first_generation_failure_replaces_status(self):
+        inter=fake_inter(PANEL_CREATE)
+        await generation_failure(inter,'','Ошибка')
+        self.assertEqual(inter.edit_original_response.await_args.kwargs['content'],'Ошибка')
+
+    async def test_generation_updates_status_before_cloud_and_releases_slot_on_error(self):
+        from engine import GenerationError
+        from unittest.mock import Mock
+        inter=fake_inter(PANEL_CREATE)
+        events=[]
+        async def edit(**kwargs):
+            events.append(kwargs['content'])
+        async def character(recent):
+            events.append('cloud')
+            raise GenerationError('test')
+        inter.edit_original_response.side_effect=edit
+        bot=SimpleNamespace(store=SimpleNamespace(draft=Mock(return_value=None),get=Mock(return_value=None),
+                            recent=Mock(return_value=[])),is_panel_channel=lambda inter:True,
+                            busy=set(),max_parallel=2,cloud=SimpleNamespace(character=character))
+        await FurBot.generate_draft(bot,inter)
+        self.assertEqual(events[:2],[GENERATION_STATUS,'cloud'])
+        self.assertIn('test',events[2])
+        self.assertEqual(bot.busy,set())

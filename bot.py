@@ -19,6 +19,8 @@ PREFIX = '!furry'
 ADMIN_COLOUR = 0xFFB668
 MEMBER_COLOUR = 0xE74C3C
 PREFERRED_ADMIN_ID = 221764587060461569
+GENERATION_STATUS = 'Awwtysm Furry Bot определяет вашу судьбу. Пожалуйста, подождите...'
+GENERATION_TIMEOUT = 300
 
 
 def esc(value):
@@ -76,6 +78,29 @@ async def edit_interaction_card(inter, data, avatar, member, accepted=False, not
                                            allowed_mentions=discord.AllowedMentions.none())
     finally:
         file.close()
+
+
+async def generation_progress(inter, replacing):
+    # For rerolls, keep the old attachment and buttons until a new draft is ready.
+    old_content = (inter.message.content or '') if replacing else ''
+    content = GENERATION_STATUS
+    if old_content and len(content)+2+len(old_content)<=2000:
+        content += '\n\n'+old_content
+    await inter.edit_original_response(content=content, allowed_mentions=discord.AllowedMentions.none())
+    return old_content
+
+
+async def generation_failure(inter, old_content, message):
+    # Restore the previous card in place. Do not leave a permanent loading notice.
+    if old_content:
+        content=message+'\n\n'+old_content
+        if len(content)<=2000:
+            await inter.edit_original_response(content=content, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await inter.edit_original_response(content=old_content, allowed_mentions=discord.AllowedMentions.none())
+            await inter.followup.send(message,ephemeral=True)
+    else:
+        await inter.edit_original_response(content=message, allowed_mentions=discord.AllowedMentions.none())
 
 
 async def acknowledge_and_run(inter, handler, *args, update_message=False, **kwargs):
@@ -285,20 +310,39 @@ class FurBot(discord.Client):
             await inter.followup.send('Генерация уже идёт или все слоты заняты. Попробуй позже.',ephemeral=True)
             return
         self.busy.add(key)
+        started=time.monotonic()
+        old_content=(inter.message.content or '') if expected is not None else ''
+        saved=False
         try:
-            data=await self.cloud.character(self.store.recent(key[0]))
-            avatar=await self.cloud.portrait(data)
+            old_content=await generation_progress(inter, replacing=expected is not None)
+            LOG.info('Generation started: guild=%s user=%s',*key)
+            async with asyncio.timeout(GENERATION_TIMEOUT):
+                LOG.info('Generation stage: text guild=%s user=%s',*key)
+                data=await self.cloud.character(self.store.recent(key[0]))
+                LOG.info('Generation stage: avatar guild=%s user=%s elapsed_s=%.1f',*key,time.monotonic()-started)
+                avatar=await self.cloud.portrait(data)
             revision=self.store.save_draft(*key,data,avatar)
             if not revision:
-                await inter.followup.send('Фурсона уже принята. Черновик не сохранён.',ephemeral=True)
+                await generation_failure(inter,old_content,'Фурсона уже принята. Черновик не сохранён.')
                 return
+            saved=True
+            LOG.info('Generation stage: delivery guild=%s user=%s elapsed_s=%.1f',*key,time.monotonic()-started)
             await self.show_draft(inter,(revision,data,avatar))
+            LOG.info('Generation finished: guild=%s user=%s elapsed_s=%.1f',*key,time.monotonic()-started)
+        except TimeoutError:
+            LOG.warning('Generation deadline exceeded: guild=%s user=%s elapsed_s=%.1f',*key,time.monotonic()-started)
+            await generation_failure(inter,old_content,'Генерация остановлена: превышено время ожидания. Старый черновик, если был, сохранён.')
         except GenerationError as exc:
-            await inter.followup.send(f'Генерация не завершена: {exc}. Старый черновик сохранён.',ephemeral=True)
+            LOG.warning('Generation failed: guild=%s user=%s reason=%s',*key,exc)
+            await generation_failure(inter,old_content,f'Генерация не завершена: {exc}. Старый черновик, если был, сохранён.')
         except Exception:
             LOG.exception('Ошибка генерации')
-            if inter.response.is_done():
-                await inter.followup.send('Внутренняя ошибка. Открой панель повторно.',ephemeral=True)
+            message=('Новый черновик сохранён, но не удалось показать карточку. Открой «Создать / продолжить».'
+                     if saved else 'Внутренняя ошибка. Открой панель повторно.')
+            try:
+                await generation_failure(inter,'' if saved else old_content,message)
+            except discord.HTTPException:
+                LOG.warning('Не удалось обновить сообщение генерации: id=%s',inter.id)
         finally:
             self.busy.discard(key)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from pathlib import Path
 import aiohttp
 from style import STYLE, PITCH_STYLE, AVATAR_STYLE, direction, repetition_issue, unique_names, normalized_name
@@ -96,10 +97,13 @@ class CloudGenerator:
         self.image_steps = image_steps
 
     async def post(self, model: str, payload: dict | aiohttp.FormData, timeout: int) -> dict:
+        started=time.monotonic()
+        LOG.info('Cloudflare request started: model=%s timeout_s=%s',model,timeout)
         try:
             body = {'data':payload} if isinstance(payload,aiohttp.FormData) else {'json':payload}
             async with self.session.post(self.base + model, headers=self.headers, **body,
                     timeout=aiohttp.ClientTimeout(total=timeout), allow_redirects=False) as resp:
+                LOG.info('Cloudflare response headers: model=%s status=%s elapsed_s=%.1f',model,resp.status,time.monotonic()-started)
                 if resp.status == 429:
                     raise GenerationError('Cloudflare ограничил запросы: возможно, исчерпана бесплатная квота. Сброс в 00:00 UTC')
                 if resp.status in (401, 403):
@@ -110,8 +114,12 @@ class CloudGenerator:
                 if not isinstance(result, dict) or result.get('success') is not True:
                     raise GenerationError('Cloudflare Workers AI отклонил запрос; проверь квоту и модели в Dashboard')
                 return result
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        except TimeoutError as exc:
+            raise GenerationError(f'Cloudflare Workers AI: модель {model} не ответила за {timeout} секунд') from exc
+        except (aiohttp.ClientError, ValueError) as exc:
             raise GenerationError('Cloudflare Workers AI недоступен или вернул некорректный ответ') from exc
+        finally:
+            LOG.info('Cloudflare request ended: model=%s elapsed_s=%.1f',model,time.monotonic()-started)
 
     async def draft_pitches(self, creative_direction: dict) -> tuple[list[str],list[str]]:
         result = await self.post(self.text_model, {
